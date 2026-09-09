@@ -1,7 +1,9 @@
 import os.path
 import shutil
 import tempfile
+import uuid
 from contextlib import asynccontextmanager
+from unittest import result
 
 from app.users import fastapi_users, current_active_user
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
@@ -93,3 +95,28 @@ async def get_feed(
             }
         )
     return {"posts": posts_data}
+
+@app.delete("/delete{post_id}")
+async def delete_post(
+        post_id: str,
+        session: AsyncSession = Depends(get_async_session),
+        user: User = Depends(current_active_user),
+):
+    try:
+        post_uuid = uuid.UUID(post_id)
+
+        result = await session.execute(select(Post).where(Post.id == post_uuid))
+        post = result.scalars().first()
+
+        if not post:
+            raise HTTPException(status_code=404, detail="Post not found")
+
+        if post.user_id != user.id:
+            raise HTTPException(status_code=403, detail="You don't have permission to delete this post")
+
+        await session.delete(post)
+        await session.commit()
+
+        return {"message": "Post deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))

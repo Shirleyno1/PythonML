@@ -24,13 +24,14 @@ if message:
 
         with st.chat_message("assistant"):
             placeholder = st.empty()
-            for chunk in response.iter_content(
-                chunk_size=None,
-                decode_unicode=True,
-            ):
-                if chunk:
-                    full_response += chunk
-                    placeholder.write(full_response)
+            with st.spinner("AI is thinking..."):
+                for chunk in response.iter_content(
+                    chunk_size=None,
+                    decode_unicode=True,
+                ):
+                    if chunk:
+                        full_response += chunk
+                        placeholder.write(full_response)
 
     else:
         st.error("Something went wrong")

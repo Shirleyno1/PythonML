@@ -34,15 +34,19 @@ def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail=f"Internal Server Error{str(e)}")
 
 def generate_response(message: str):
-    stream = client.responses.create(
-        model="gpt-5-mini",
-        input=message,
-        stream=True
-    )
+    try:
+        stream = client.responses.create(
+            model="gpt-5-mini",
+            input=message,
+            stream=True
+        )
 
-    for event in stream:
-        if event.type == "response.output_text.delta":
-            yield event.delta
+        for event in stream:
+            if event.type == "response.output_text.delta":
+                yield event.delta
+    except Exception as e:
+        yield (f"\n[Error generating response: {e}]")
+
 
 @app.post("/chat/stream")
 def chat_stream(request: ChatRequest):

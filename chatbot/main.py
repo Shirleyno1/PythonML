@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from openai import OpenAI
 
-from chatbot.ai_service import generate_structured_response
+from chatbot.ai_service import generate_structured_response, classify_message
 from chatbot.coversation_store import add_message, get_conversation
 from chatbot.schemas import ChatRequest, ChatResponse
 
@@ -79,3 +79,8 @@ def chat_structured(request: ChatRequest):
     result = generate_structured_response(request.message)
 
     return result
+
+@app.post("/classify")
+def classify(request: ChatRequest):
+    return classify_message(request.message)
+

@@ -5,4 +5,4 @@ import uvicorn
 #     uvicorn.run("app.app:app", reload=True, port=8000, host="0.0.0.0")
 
 if __name__ == "__main__":
-    uvicorn.run("ai_app.main:app", reload=True, port=8080, host="0.0.0.0")
+    uvicorn.run("chatbot.main:app", reload=True, port=8080, host="0.0.0.0")

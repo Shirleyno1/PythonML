@@ -5,8 +5,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from openai import OpenAI
 
-from ai_app.coversation_store import add_message, get_conversation
-from ai_app.schemas import ChatRequest, ChatResponse
+from chatbot.ai_service import generate_structured_response
+from chatbot.coversation_store import add_message, get_conversation
+from chatbot.schemas import ChatRequest, ChatResponse
 
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
@@ -72,3 +73,9 @@ def chat_stream(request: ChatRequest):
         generate_response(conversation_id=request.conversation_id, message=request.message),
         media_type="text/plain"
     )
+
+@app.post("/chat/structured")
+def chat_structured(request: ChatRequest):
+    result = generate_structured_response(request.message)
+
+    return result

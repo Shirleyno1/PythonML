@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from openai import OpenAI
+
+from ai_app.coversation_store import add_message, get_conversation
 from ai_app.schemas import ChatRequest, ChatResponse
 
 load_dotenv()
@@ -33,17 +35,33 @@ def chat(request: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal Server Error{str(e)}")
 
-def generate_response(message: str):
+def generate_response(conversation_id: str, message: str):
     try:
+        add_message(
+            conversation_id=conversation_id,
+            role="user", content=message
+        )
+
+        history = get_conversation(conversation_id=conversation_id)
         stream = client.responses.create(
             model="gpt-5-mini",
-            input=message,
+            input=history,
             stream=True
         )
 
+        full_response = ""
+
         for event in stream:
             if event.type == "response.output_text.delta":
-                yield event.delta
+                delta = event.delta
+                full_response += delta
+                yield delta
+
+        add_message(
+            conversation_id=conversation_id,
+            role="assistant",
+            content=full_response
+        )
     except Exception as e:
         yield (f"\n[Error generating response: {e}]")
 
@@ -51,6 +69,6 @@ def generate_response(message: str):
 @app.post("/chat/stream")
 def chat_stream(request: ChatRequest):
     return StreamingResponse(
-        generate_response(request.message),
+        generate_response(conversation_id=request.conversation_id, message=request.message),
         media_type="text/plain"
     )

@@ -2,33 +2,19 @@ import os.path
 import shutil
 import tempfile
 import uuid
-from contextlib import asynccontextmanager
-from unittest import result
 
-from app.users import fastapi_users, current_active_user
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
+from posts.users import current_active_user
+from fastapi import HTTPException, UploadFile, File, Form, Depends, APIRouter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import create_db_tables, get_async_session, Post, User
-from app.images import imagekit
-from app.schema import UserRead, UserCreate, UserUpdate
-from app.users import auth_backend
+from posts.db import get_async_session, Post, User
+from posts.images import imagekit
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await create_db_tables()
-    yield
-app = FastAPI(lifespan=lifespan)
+posts_router = APIRouter(prefix="/posts", tags=["posts"])
 
-app.include_router(fastapi_users.get_auth_router(auth_backend), prefix="/auth/jwt", tags=["auth"])
-app.include_router(fastapi_users.get_register_router(UserRead, UserCreate), prefix="/auth", tags=["auth"])
-app.include_router(fastapi_users.get_reset_password_router(), prefix="/auth", tags=["auth"])
-app.include_router(fastapi_users.get_verify_router(UserRead), prefix="/auth", tags=["auth"])
-app.include_router(fastapi_users.get_users_router(UserRead, UserUpdate), prefix="/users", tags=["users"])
-
-@app.post("/upload")
+@posts_router.post("/upload")
 async def upload_file(
         file: UploadFile = File(...),
         caption: str = Form(""),
@@ -68,8 +54,8 @@ async def upload_file(
         file.file.close()
 
 
-@app.get("/feed")
-async def get_feed(
+@posts_router.get("/")
+async def get_posts(
         session: AsyncSession = Depends(get_async_session),
         user: User = Depends(current_active_user),
 ):
@@ -83,7 +69,7 @@ async def get_feed(
     for post in posts:
         posts_data.append(
             {
-                "id": post,
+                "id": post.id,
                 "user_id": str(post.user_id),
                 "caption": post.caption,
                 "url": post.url,
@@ -96,27 +82,26 @@ async def get_feed(
         )
     return {"posts": posts_data}
 
-@app.delete("/delete{post_id}")
+@posts_router.delete("/{post_id}")
 async def delete_post(
         post_id: str,
         session: AsyncSession = Depends(get_async_session),
         user: User = Depends(current_active_user),
 ):
     try:
-        post_uuid = uuid.UUID(post_id)
+        uuid.UUID(post_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid post_id format: {post_id}")
 
-        result = await session.execute(select(Post).where(Post.id == post_uuid))
-        post = result.scalars().first()
+    result = await session.execute(select(Post).where(Post.id == post_id))
+    post = result.scalars().first()
 
-        if not post:
-            raise HTTPException(status_code=404, detail="Post not found")
+    if not post:
+        raise HTTPException(status_code=404, detail=f"Post {post_id} not found")
 
-        if post.user_id != user.id:
-            raise HTTPException(status_code=403, detail="You don't have permission to delete this post")
+    if post.user_id != user.id:
+        raise HTTPException(status_code=403, detail="You don't have permission to delete this post")
 
-        await session.delete(post)
-        await session.commit()
-
-        return {"message": "Post deleted successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    await session.delete(post)
+    await session.commit()
+    return {"message": "Post deleted successfully"}

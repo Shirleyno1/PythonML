@@ -61,6 +61,8 @@ post management.
 If the intent is search, extract the search query.
 
 If the intent is not search, query should be null.
+
+In the intent is delete, extract the query, it will be post id that want to delete.
 """
             },
             {

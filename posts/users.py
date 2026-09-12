@@ -7,7 +7,7 @@ from fastapi_users import UUIDIDMixin, BaseUserManager, models, FastAPIUsers
 from fastapi_users.authentication import BearerTransport, JWTStrategy, AuthenticationBackend
 from fastapi_users_db_sqlalchemy import SQLAlchemyUserDatabase
 
-from app.db import User, get_user_db
+from posts.db import User, get_user_db
 
 SECRET = ""
 

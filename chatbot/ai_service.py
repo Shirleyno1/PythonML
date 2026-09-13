@@ -26,51 +26,56 @@ def generate_structured_response(
 
 def classify_message(
         message: str,
-) -> UserIntent:
+):
 
-    response = client.responses.parse(
-        model="gpt-5-mini",
-        input=[
-            {
-                "role": "system",
-                "content": """
-You are an intent classifier for a post management application.
+    try:
+        response = client.responses.parse(
+            model="gpt-5-mini",
+            input=[
+                {
+                    "role": "system",
+                    "content": """
+    You are an intent classifier for a personal post management application.
+    
+    Your job is to classify the user's message into exactly one of these intents:
+    
+    - search
+    - create
+    - delete
+    - update
+    - general
+    
+    Rules:
+    
+    search:
+    The user wants to find, search, or retrieve posts.
+    
+    create:
+    The user wants to create a new post.
+    
+    delete:
+    The user wants to delete a post.
+    
+    general:
+    The user is asking a general question that does not require
+    post management.
+    
+    If the intent is search, extract the search query.
+    
+    If the intent is not search, query should be null.
+    
+    In the intent is delete, extract the query, it will be post id that want to delete.
+    """
+                },
+                {
+                    "role": "user",
+                    "content": message
+                }
+            ],
+            text_format=UserIntent
+        )
 
-Classify the user's message into exactly one of:
+        return response.output_parsed
 
-- search
-- create
-- delete
-- general
-
-Rules:
-
-search:
-The user wants to find, search, or retrieve posts.
-
-create:
-The user wants to create a new post.
-
-delete:
-The user wants to delete a post.
-
-general:
-The user is asking a general question that does not require
-post management.
-
-If the intent is search, extract the search query.
-
-If the intent is not search, query should be null.
-
-In the intent is delete, extract the query, it will be post id that want to delete.
-"""
-            },
-            {
-                "role": "user",
-                "content": message
-            }
-        ],
-        text_format=UserIntent
-    )
-
-    return response.output_parsed
+    except Exception as e:
+        print(f"LLM error: {e}")

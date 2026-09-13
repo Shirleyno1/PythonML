@@ -107,6 +107,14 @@ async def ai_endpoint(
 ):
     intent = classify_message(request.message)
 
+    if intent is None:
+        return {
+            "status": "error",
+            "message": {
+                "The AI service is temporary unavailable."
+            }
+        }
+
     if intent.confidence < 0.7:
         return {
             "intent": "general",

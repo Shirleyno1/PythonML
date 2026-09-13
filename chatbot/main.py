@@ -1,5 +1,7 @@
 import asyncio
+import logging
 import os
+import time
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -12,6 +14,7 @@ from chatbot.ai_service import generate_structured_response, classify_message
 from chatbot.coversation_store import add_message, get_conversation
 from chatbot.schemas import ChatRequest, ChatResponse
 from chatbot.user_intent import UserIntent
+from common.logging_config import setup_logging
 from posts.app import get_posts, upload_file, delete_post, posts_router
 from posts.db import get_async_session, User, create_db_tables
 from posts.schema import UserRead, UserUpdate, UserCreate
@@ -20,6 +23,10 @@ from posts.users import current_active_user, fastapi_users, auth_backend
 
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
+
+setup_logging()
+logger = logging.getLogger(__name__)
+environment = os.getenv("ENVIRONMENT", "development")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -132,7 +139,23 @@ async def classify_with_retry(
     for attempt in range(max_retries):
         try:
 
-            return classify_message(message)
+            start = time.perf_counter()
+
+            result = classify_message(message)
+
+            duration = (
+                time.time() - start
+            )
+
+            logger.info(
+                "AI classification complete",
+                extra={
+                    "intent": result.intent,
+                    "confidence": result.confidence,
+                    "latency": duration
+                }
+            )
+            return result
 
         except Exception as e:
             if attempt == max_retries - 1:

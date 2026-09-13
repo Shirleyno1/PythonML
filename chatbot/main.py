@@ -1,3 +1,4 @@
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
@@ -105,7 +106,7 @@ async def ai_endpoint(
     session: AsyncSession = Depends(get_async_session),
     user: User = Depends(current_active_user),
 ):
-    intent = classify_message(request.message)
+    intent = await classify_with_retry(request.message)
 
     if intent is None:
         return {
@@ -123,6 +124,22 @@ async def ai_endpoint(
 
 
     return await decide_by_user_intent(intent, session=session, user=user)
+
+async def classify_with_retry(
+        message: str,
+        max_retries: int = 3,
+):
+    for attempt in range(max_retries):
+        try:
+
+            return classify_message(message)
+
+        except Exception as e:
+            if attempt == max_retries - 1:
+                print(f"Retried {max_retries} times and still fail with: {e}")
+                raise
+            await asyncio.sleep(2 ** attempt)
+    return None
 
 
 async def decide_by_user_intent(

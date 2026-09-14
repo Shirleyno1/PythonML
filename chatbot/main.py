@@ -19,7 +19,7 @@ from posts.app import get_posts, upload_file, delete_post, posts_router
 from posts.db import get_async_session, User, create_db_tables
 from posts.schema import UserRead, UserUpdate, UserCreate
 from posts.users import current_active_user, fastapi_users, auth_backend
-
+from rag.service import RAGService
 
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
@@ -131,6 +131,20 @@ async def ai_endpoint(
 
 
     return await decide_by_user_intent(intent, session=session, user=user)
+
+
+@app.post("/rag")
+async def rag(
+        request: ChatRequest,
+        session: AsyncSession = Depends(get_async_session),
+        user: User = Depends(current_active_user),
+):
+
+    result = await RAGService().answer(
+        question=request.message
+    )
+
+    return result
 
 async def classify_with_retry(
         message: str,

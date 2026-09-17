@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from chatbot.models import AIResponse
-from chatbot.user_intent import UserIntent
+from chatbot.classifier import UserIntent
 
 load_dotenv()
 

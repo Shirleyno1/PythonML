@@ -2,7 +2,11 @@ import os.path
 import shutil
 import tempfile
 import uuid
+from typing import Annotated
 
+from posts.dependencies import get_post_service
+from posts.repository import PostRepository
+from posts.service import PostService
 from posts.users import current_active_user
 from fastapi import HTTPException, UploadFile, File, Form, Depends, APIRouter
 from sqlalchemy import select
@@ -56,31 +60,10 @@ async def upload_file(
 
 @posts_router.get("/")
 async def get_posts(
-        session: AsyncSession = Depends(get_async_session),
         user: User = Depends(current_active_user),
+        service: Annotated[PostService, Depends(get_post_service)] = None
 ):
-    result = await session.execute(select(Post).order_by(Post.created_at.desc()))
-    posts = [row[0] for row in result.all()]
-    posts_data = []
-
-    result = await session.execute(select(User))
-    users = [row[0] for row in result.all()]
-    user_dict = {u.id: u.email for u in users}
-    for post in posts:
-        posts_data.append(
-            {
-                "id": post.id,
-                "user_id": str(post.user_id),
-                "caption": post.caption,
-                "url": post.url,
-                "file_name": post.file_name,
-                "file_type": post.file_type,
-                "created_at": post.created_at,
-                "is_owner": post.user_id == user.id,
-                "email": user_dict.get(post.user_id, "Unknown"),
-            }
-        )
-    return {"posts": posts_data}
+    return await service.get_posts(user)
 
 @posts_router.delete("/{post_id}")
 async def delete_post(

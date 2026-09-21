@@ -11,13 +11,15 @@ from openai import OpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from chatbot.ai_service import generate_structured_response, classify_message
+from chatbot.classifier import UserIntent
 from chatbot.coversation_store import add_message, get_conversation
 from chatbot.schemas import ChatRequest, ChatResponse
 from common.logging_config import setup_logging
-from posts.app import posts_router
+from posts.app import posts_router, get_posts, upload_file, delete_post
 from posts.db import get_async_session, User, create_db_tables
 from posts.schema import UserRead, UserUpdate, UserCreate
 from posts.users import current_active_user, fastapi_users, auth_backend
+from rag.service import RAGService
 
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")

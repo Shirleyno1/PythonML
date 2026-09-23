@@ -63,7 +63,7 @@ async def get_posts(
         user: User = Depends(current_active_user),
         service: Annotated[PostService, Depends(get_post_service)] = None
 ):
-    return await service.get_posts(user)
+    return await service.get_posts(str(user.id))
 
 @posts_router.delete("/{post_id}")
 async def delete_post(
@@ -76,15 +76,5 @@ async def delete_post(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid post_id format: {post_id}")
 
-    result = await session.execute(select(Post).where(Post.id == post_id))
-    post = result.scalars().first()
 
-    if not post:
-        raise HTTPException(status_code=404, detail=f"Post {post_id} not found")
-
-    if post.user_id != user.id:
-        raise HTTPException(status_code=403, detail="You don't have permission to delete this post")
-
-    await session.delete(post)
-    await session.commit()
     return {"message": "Post deleted successfully"}

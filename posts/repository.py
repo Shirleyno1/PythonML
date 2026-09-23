@@ -1,3 +1,4 @@
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -18,3 +19,22 @@ class PostRepository:
         )
 
         return result.scalars().all()
+
+    async def delete_post(self, post_id: str, user_id: int):
+        result = await self.session.execute(
+            select(Post).where(
+                Post.id == post_id
+            )
+        )
+
+        post = result.scalars().first()
+
+        if not post:
+            raise HTTPException(status_code=404, detail=f"Post {post_id} not found")
+
+        if post.user_id != user_id:
+            raise HTTPException(status_code=403, detail="You don't have permission to delete this post")
+
+        await self.session.delete(post)
+        await self.session.commit()
+

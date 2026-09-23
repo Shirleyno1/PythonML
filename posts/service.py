@@ -7,7 +7,7 @@ class PostService:
     def __init__(self, repository: PostRepository):
         self.repository = repository
 
-    async def get_posts(self, user: User):
+    async def get_posts(self, user_id: str):
         rows = await self.repository.get_posts()
 
         posts_data = [
@@ -18,10 +18,14 @@ class PostService:
                 "file_name": post.file_name,
                 "file_type": post.file_type,
                 "created_at": post.created_at,
-                "is_owner": post.user_id == user.id,
-                "email": post.user.email if post.user else "Unknown",
+                "is_owner": post.user_id == user_id,
+                "email": "Unknown",
             }
             for post in rows
         ]
 
         return {"posts": posts_data}
+
+    async def delete_post(self, post_id: str, user_id: int):
+        await self.repository.delete_post(post_id, user_id)
+

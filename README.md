@@ -1,475 +1,302 @@
 # AI Practice Project
 
-An AI-powered backend application built with **Python, FastAPI, OpenAI, RAG, and Model Context Protocol (MCP)**.
+A FastAPI-based AI application that combines post management, authentication, RAG, and an MCP-based agent architecture.
 
-The project is used to explore practical AI engineering concepts including LLM applications, tool calling, RAG, evaluation, authentication, asynchronous backend development, and MCP-based tool integration.
+The project uses **FastAPI + OpenAI + FastMCP + MCP Client** to allow the AI agent to dynamically discover and execute backend tools.
+
+---
 
 ## Architecture
 
-```text
-                    ┌──────────────────┐
-                    │   Streamlit UI   │
-                    └────────┬─────────┘
-                             │
-                             ▼
-                    ┌──────────────────┐
-                    │     FastAPI      │
-                    │    Backend       │
-                    └────────┬─────────┘
-                             │
-              ┌──────────────┴──────────────┐
-              │                             │
-              ▼                             ▼
-        ┌───────────┐                 ┌─────────────┐
-        │ AI / RAG  │                 │ Posts API   │
-        └───────────┘                 └──────┬──────┘
-              │                              │
-              ▼                              ▼
-        ┌───────────┐                 ┌─────────────┐
-        │  OpenAI   │                 │ PostService │
-        └───────────┘                 └──────┬──────┘
-                                             │
-                                      ┌──────▼──────┐
-                                      │ Repository  │
-                                      └──────┬──────┘
-                                             │
-                                             ▼
-                                         Database
-
-MCP integration:
-
-        ┌─────────────────┐
-        │   MCP Client    │
-        │   FastMCP       │
-        └────────┬────────┘
-                 │ HTTP
-                 ▼
-        ┌─────────────────┐
-        │   MCP Server    │
-        │   FastMCP       │
-        └────────┬────────┘
-                 │
-          ┌──────┴──────┐
-          ▼             ▼
-    search_posts    delete_post
-          │             │
-          └──────┬──────┘
-                 ▼
-            PostService
-                 │
-            PostRepository
-                 │
-              Database
-```
-
-## Features
-
-### Backend
-
-* Python
-* FastAPI
-* Async SQLAlchemy
-* SQLite / aiosqlite
-* JWT authentication
-* Dependency injection
-* Repository / Service architecture
-* Async database operations
-* File upload
-* Post creation, retrieval, search and deletion
-* User ownership checks
-* Structured API responses
-* Logging
-* Error handling and retries
-
-### AI / LLM
-
-* OpenAI API
-* LLM-based chatbot
-* Tool/function calling
-* Intent classification
-* Query extraction
-* Guardrails for ambiguous requests
-* Structured outputs
-* Streaming responses
-* Retry handling
-
-Current intents include:
+The current AI/MCP architecture is:
 
 ```text
-search
-create
-delete
-general
+                         User
+                          │
+                          ▼
+                    FastAPI /ai/mcp
+                          │
+                          ▼
+                 AgentOrchestrator
+                    │           │
+                    │           │
+                    ▼           ▼
+              OpenAIClient   MCPClient
+                    │           │
+                    │           │ MCP
+                    │           ▼
+                    │      FastMCP Server
+                    │           │
+                    │           ▼
+                    │      Backend Tools
+                    │
+                    ▼
+                 OpenAI
 ```
 
-### RAG
-
-Implemented a Retrieval-Augmented Generation pipeline:
+The complete tool-calling flow is:
 
 ```text
-PDF / Documents
-      ↓
-Document Loading
-      ↓
-Chunking
-      ↓
-Embeddings
-      ↓
-Vector Store
-      ↓
-Retriever
-      ↓
-Prompt
-      ↓
-LLM
-      ↓
-Answer
+User message
+     │
+     ▼
+AgentOrchestrator
+     │
+     ├── Discover MCP tools
+     │       │
+     │       ▼
+     │   FastMCP Server
+     │
+     ├── Convert MCP tool schemas
+     │   to OpenAI function schemas
+     │
+     ▼
+OpenAI
+     │
+     │ function_call
+     ▼
+AgentOrchestrator
+     │
+     ▼
+MCPClient.call_tool()
+     │
+     ▼
+FastMCP Server
+     │
+     ▼
+Backend tool execution
+     │
+     ▼
+Tool result
+     │
+     ▼
+OpenAI
+     │
+     ▼
+Final response
 ```
 
-RAG components are separated into dedicated modules such as:
+---
 
-```text
-chunking.py
-documents.py
-embeddings.py
-generation.py
-retrival.py
-service.py
-vector_store.py
-```
+# MCP Integration
 
-The project supports retrieving information from local documents and using the retrieved context to generate answers.
+The project uses **FastMCP** to expose backend functionality as MCP tools.
 
-### Evaluation & Monitoring
-
-Implemented evaluation and monitoring for the AI application, including:
-
-* Classification accuracy
-* Evaluation datasets
-* Model output evaluation
-* Accuracy monitoring
-* Logging of AI operations
-* Error tracking
-
-### MCP
-
-Implemented an MCP server using **FastMCP**.
-
-The MCP server exposes application functionality as MCP tools.
-
-Current tools:
+Current MCP tools include:
 
 ```text
 search_posts
+create_post
 delete_post
+update_post
 ```
 
-Example MCP tool:
+The chatbot does not need to hard-code these tools individually.
 
-```python
-@mcp.tool
-async def search_posts(user_id: str) -> list[dict]:
-    """Search Posts"""
+Instead, the agent:
 
-    async with get_post_service() as service:
-        result = await service.get_posts(user_id)
-        return result["posts"]
-```
+1. Connects to the MCP server.
+2. Calls `list_tools()`.
+3. Dynamically discovers the available MCP tools.
+4. Converts their schemas into OpenAI function-tool schemas.
+5. Provides those tools to the OpenAI model.
+6. Executes the tool selected by the model through MCP.
+7. Sends the tool result back to the model.
+8. Returns the final response to the user.
 
-The MCP server uses the existing application service and repository layers rather than duplicating business logic.
+This means that adding another MCP tool can automatically make it available to the agent without adding another hard-coded tool definition to the orchestrator.
+
+---
+
+# MCP Server
+
+The MCP server runs separately from the main FastAPI application.
+
+For local development:
 
 ```text
-MCP Tool
-   ↓
-PostService
-   ↓
-PostRepository
-   ↓
-Database
+FastAPI application
+http://localhost:8080
+
+MCP server
+http://localhost:8001/mcp
 ```
 
-### MCP Client
-
-A FastMCP client connects to the MCP server over HTTP.
-
-The client can discover the available tools:
-
-```python
-tools = await client.list_tools()
-
-for tool in tools:
-    print(tool.name)
-```
-
-Current output:
-
-```text
-search_posts
-delete_post
-```
-
-The client can also invoke a tool through MCP:
-
-```python
-result = await client.call_tool(
-    "search_posts",
-    {
-        "user_id": "..."
-    }
-)
-```
-
-This verifies the complete MCP communication flow:
-
-```text
-MCP Client
-    ↓
-HTTP
-    ↓
-MCP Server
-    ↓
-MCP Tool
-    ↓
-Application Service
-    ↓
-Repository
-    ↓
-Database
-```
-
-## Project Structure
-
-```text
-practice/
-│
-├── posts/
-│   ├── __init__.py
-│   ├── db.py
-│   ├── models.py
-│   ├── repository.py
-│   └── service.py
-│
-├── mcp_server/
-│   ├── __init__.py
-│   ├── server.py
-│   ├── client.py
-│   └── dependencies.py
-│
-├── rag/
-│   ├── chunking.py
-│   ├── documents.py
-│   ├── embeddings.py
-│   ├── generation.py
-│   ├── retrival.py
-│   ├── service.py
-│   └── vector_store.py
-│
-├── chatbot/
-│   └── ...
-│
-├── users/
-│   └── ...
-│
-└── README.md
-```
-
-## Architecture Principles
-
-The project uses separation between:
-
-```text
-Transport Layer
-      ↓
-Service Layer
-      ↓
-Repository Layer
-      ↓
-Database
-```
-
-FastAPI and MCP are treated as different interfaces to the same application logic.
-
-```text
-FastAPI ────────→ PostService ─────→ PostRepository
-                                      ↓
-MCP ────────────→ PostService ─────→ Database
-```
-
-This avoids duplicating business logic between HTTP endpoints and MCP tools.
-
-FastAPI uses its dependency injection system for request-scoped dependencies, while the MCP layer manages its own service/database context.
-
-## Running the Application
-
-### Start FastAPI
-
-```bash
-uvicorn <your_app>:app --reload
-```
-
-### Start MCP Server
-
-From the project root:
-
-```bash
-python -m mcp_server.server
-```
-
-The MCP server is configured to use HTTP transport.
-
-### Start MCP Client
-
-In another terminal:
-
-```bash
-python -m mcp_server.client
-```
-
-The client connects to the MCP server and can discover and invoke MCP tools.
-
-## Current MCP Flow
-
-The current implementation supports:
-
-```text
-Client
-  │
-  │ list_tools()
-  ▼
-MCP Server
-  │
-  ├── search_posts
-  └── delete_post
-
-Client
-  │
-  │ call_tool()
-  ▼
-MCP Server
-  │
-  ▼
-PostService
-  │
-  ▼
-PostRepository
-  │
-  ▼
-Database
-```
-
-## Next Step
-
-The next stage is to connect the MCP client/tool discovery with an OpenAI model.
-
-The target architecture is:
-
-```text
-User
-  ↓
-Chatbot
-  ↓
-OpenAI Model
-  ↓
-Model decides whether a tool is required
-  ↓
-MCP Client
-  ↓
-MCP Server
-  ↓
-MCP Tool
-  ↓
-PostService
-  ↓
-Database
-  ↓
-Tool Result
-  ↓
-OpenAI Model
-  ↓
-Final Answer
-```
+The two applications must use different ports.
 
 For example:
 
 ```text
-User:
-"Search my posts"
-
-        ↓
-
-OpenAI Model
-
-        ↓
-
-search_posts(user_id)
-
-        ↓
-
-MCP Client
-
-        ↓
-
+Terminal 1
+──────────
 MCP Server
+localhost:8001
 
-        ↓
 
-PostService
-
-        ↓
-
-Database
-
-        ↓
-
-Posts returned to the model
-
-        ↓
-
-"Here are your posts..."
+Terminal 2
+──────────
+FastAPI
+localhost:8080
 ```
 
-## Learning Topics Covered
+The MCP client connects to:
 
-This project has been used to practice:
+```python
+server_url = "http://localhost:8001/mcp"
+```
 
-* Python
-* Async Python
-* FastAPI
-* REST APIs
-* SQLAlchemy
-* aiosqlite
-* JWT authentication
-* Dependency Injection
-* Service / Repository architecture
-* OpenAI API
-* LLM applications
-* Tool calling
-* Intent classification
-* Guardrails
-* Structured outputs
-* Streaming
-* RAG
-* Embeddings
-* Vector stores
-* Evaluation
-* Monitoring
-* MCP
-* FastMCP
-* MCP clients and servers
-* MCP tool discovery
-* MCP tool invocation
+`0.0.0.0` is used for server binding/listening, while the client normally connects using `localhost`.
 
-## Future Improvements
+---
 
-Planned areas include:
+# MCP Client
 
-* OpenAI + MCP integration
-* LLM-driven MCP tool selection
-* Improved authentication/context propagation
-* LangChain
-* LangGraph
-* Docker
-* AWS/cloud deployment
-* Observability
-* LLMOps
-* Production-oriented AI agent architecture
+The project contains an MCP client wrapper:
+
+```text
+mcp_server/
+└── client.py
+```
+
+The client uses the FastMCP `Client` and manages its connection using an asynchronous context manager.
+
+```python
+from typing import Any
+from fastmcp import Client
+
+
+class MCPClient:
+
+    def __init__(self, server_url: str):
+        self.client = Client(server_url)
+
+    async def __aenter__(self):
+        await self.client.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return await self.client.__aexit__(
+            exc_type,
+            exc,
+            tb,
+        )
+
+    async def list_tools(self):
+        return await self.client.list_tools()
+
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+    ):
+        return await self.client.call_tool(
+            name,
+            arguments,
+        )
+```
+
+The MCP client must be connected before calling `list_tools()` or `call_tool()`:
+
+```python
+async with self.mcp_client:
+    tools = await self.mcp_client.list_tools()
+```
+
+Without the context manager, the FastMCP client raises:
+
+```text
+RuntimeError:
+Client is not connected.
+Use the 'async with client:' context manager first.
+```
+
+---
+
+# Schema Adapter
+
+MCP tools use MCP tool schemas, while the OpenAI model expects function-tool schemas.
+
+The project uses a `SchemaAdapter` to bridge these two representations.
+
+```text
+mcp_server/
+└── schema_adapter.py
+```
+
+Example:
+
+```python
+class SchemaAdapter:
+
+    @staticmethod
+    def mcp_to_openai(mcp_tools):
+
+        openai_tools = []
+
+        for tool in mcp_tools:
+            openai_tools.append({
+                "type": "function",
+                "name": tool.name,
+                "description": tool.description or "",
+                "parameters": tool.input_schema,
+            })
+
+        return openai_tools
+```
+
+The important part is that the MCP schema is obtained dynamically:
+
+```python
+tool.input_schema
+```
+
+rather than manually defining the parameters for every tool.
+
+---
+
+# OpenAI Client
+
+The project wraps the OpenAI SDK in its own `OpenAIClient`.
+
+```text
+chatbot/
+└── openai_client.py
+```
+
+The FastAPI application is asynchronous, so the wrapper uses `AsyncOpenAI`.
+
+```python
+from openai import AsyncOpenAI
+
+
+class OpenAIClient:
+
+    def __init__(self, api_key: str):
+        self.client = AsyncOpenAI(
+            api_key=api_key
+        )
+
+    async def create_response(
+        self,
+        message: str,
+        tools: list,
+    ):
+        return await self.client.responses.create(
+            model="gpt-5-mini",
+            input=message,
+            tools=tools,
+        )
+
+    async def create_response_with_tool_result(
+        self,
+        response_id: str,
+        tool_call_id: str,
+        tool_result: str,
+        tools: list,
+    ):
+        return await self.client.responses.create(
+            model="gpt-5-mini",
+            previous_response_id=response_id,
+            input=[
+                {
+```

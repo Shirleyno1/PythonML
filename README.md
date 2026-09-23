@@ -299,4 +299,537 @@ class OpenAIClient:
             previous_response_id=response_id,
             input=[
                 {
+                    "type": "function_call_output",
+                    "call_id": tool_call_id,
+                    "output": tool_result,
+                }
+            ],
+            tools=tools,
+        )
 ```
+
+The wrapper keeps OpenAI-specific code separate from the agent orchestration logic.
+
+---
+
+# Agent Orchestrator
+
+The `AgentOrchestrator` coordinates the complete AI workflow.
+
+```text
+chatbot/
+├── main.py
+├── orchestrator.py
+├── openai_client.py
+└── ...
+```
+
+Its responsibilities are:
+
+```text
+AgentOrchestrator
+│
+├── Discover MCP tools
+│
+├── Convert MCP schemas
+│   → OpenAI tool schemas
+│
+├── Send user message + tools to OpenAI
+│
+├── Detect function calls
+│
+├── Extract:
+│   ├── name
+│   ├── arguments
+│   └── call_id
+│
+├── Execute MCP tool
+│
+├── Send tool result back to OpenAI
+│
+└── Return final answer
+```
+
+The Responses API function-call identifier is:
+
+```python
+tool_call["call_id"]
+```
+
+This `call_id` must be used when returning the corresponding `function_call_output`.
+
+Example:
+
+```python
+tool_name = tool_call["name"]
+
+arguments = json.loads(
+    tool_call["arguments"]
+)
+
+tool_call_id = tool_call["call_id"]
+```
+
+Then:
+
+```python
+result = await self.mcp_client.call_tool(
+    name=tool_name,
+    arguments=arguments,
+)
+```
+
+The result is sent back to OpenAI using the same call ID.
+
+---
+
+# Agent Tool-Calling Loop
+
+The core agent behavior is:
+
+```python
+response = await self.openai_client.create_response(
+    message=message,
+    tools=openai_tools,
+)
+```
+
+The orchestrator checks whether the model requested a tool.
+
+```text
+                    OpenAI
+                       │
+                       ▼
+                 Response
+                       │
+             ┌─────────┴─────────┐
+             │                   │
+        No function call    Function call
+             │                   │
+             ▼                   ▼
+       Final answer         Extract tool
+                                  │
+                                  ▼
+                            MCPClient
+                                  │
+                                  ▼
+                            MCP Server
+                                  │
+                                  ▼
+                             Tool result
+                                  │
+                                  ▼
+                                OpenAI
+                                  │
+                                  ▼
+                            Final answer
+```
+
+This creates an agent loop where the model can decide which available backend capability it needs.
+
+---
+
+# Example
+
+User:
+
+```text
+Find my restaurant posts
+```
+
+The model may decide to call:
+
+```text
+search_posts
+```
+
+with arguments such as:
+
+```json
+{
+  "query": "restaurant"
+}
+```
+
+The orchestrator executes:
+
+```python
+await self.mcp_client.call_tool(
+    name="search_posts",
+    arguments={
+        "query": "restaurant"
+    },
+)
+```
+
+The MCP server executes the actual backend operation.
+
+The result is then returned to OpenAI so that the model can produce the final natural-language response.
+
+---
+
+# FastAPI Endpoint
+
+The chatbot is exposed through:
+
+```text
+POST /ai/mcp
+```
+
+The endpoint authenticates the user and passes the message to the orchestrator:
+
+```python
+@app.post("/ai/mcp")
+async def ai_mcp(
+    request: ChatRequest,
+    session: AsyncSession = Depends(
+        get_async_session
+    ),
+    user: User = Depends(current_active_user),
+):
+    result = await orchestrator.run_agent(
+        message=request.message
+    )
+
+    return result
+```
+
+The router itself does not contain the agent logic.
+
+Instead:
+
+```text
+FastAPI Router
+      │
+      ▼
+AgentOrchestrator
+```
+
+This keeps API-layer responsibilities separate from AI orchestration.
+
+---
+
+# Configuration
+
+The MCP server URL should be configuration rather than hard-coded throughout the application.
+
+Example `.env`:
+
+```env
+OPENAI_API_KEY=your-openai-api-key
+MCP_SERVER_URL=http://localhost:8001/mcp
+JWT_SECRET=your-long-random-secret
+```
+
+The `.env` file should not be committed:
+
+```gitignore
+.env
+```
+
+The application can then inject the configuration into the MCP client:
+
+```python
+mcp_client = MCPClient(
+    server_url=settings.mcp_server_url
+)
+```
+
+---
+
+# Running the Application
+
+## 1. Start the MCP server
+
+Start the FastMCP server using the project's MCP server entry point.
+
+The MCP endpoint should be available at:
+
+```text
+http://localhost:8001/mcp
+```
+
+## 2. Start FastAPI
+
+```bash
+uvicorn chatbot.main:app \
+    --reload \
+    --port 8080 \
+    --host 0.0.0.0
+```
+
+The FastAPI application will be available on:
+
+```text
+http://localhost:8080
+```
+
+## 3. Authenticate
+
+Use the existing authentication endpoint:
+
+```text
+POST /auth/jwt/login
+```
+
+## 4. Call the MCP-enabled chatbot
+
+```text
+POST /ai/mcp
+```
+
+Example request:
+
+```json
+{
+  "message": "Find my restaurant posts"
+}
+```
+
+---
+
+# Project Structure
+
+Current relevant structure:
+
+```text
+practice/
+│
+├── chatbot/
+│   ├── main.py
+│   ├── orchestrator.py
+│   ├── openai_client.py
+│   └── ...
+│
+├── mcp_server/
+│   ├── client.py
+│   ├── schema_adapter.py
+│   └── ...
+│
+├── rag/
+│   ├── chunking.py
+│   ├── documents.py
+│   ├── embeddings.py
+│   ├── generation.py
+│   ├── retrival.py
+│   ├── service.py
+│   └── vector_store.py
+│
+├── .env
+└── README.md
+```
+
+---
+
+# Key Design Concepts Learned
+
+## MCP
+
+Model Context Protocol provides a standard way for an AI application to discover and interact with external tools and capabilities.
+
+In this project:
+
+```text
+Agent
+  ↓
+MCP Client
+  ↓
+MCP Server
+  ↓
+Backend functionality
+```
+
+## Tool Discovery
+
+The agent does not need to know every backend tool in advance.
+
+It discovers them through:
+
+```python
+await mcp_client.list_tools()
+```
+
+## Schema Adaptation
+
+The MCP tool definition is converted into a schema that the OpenAI model can understand:
+
+```text
+MCP Tool Schema
+      ↓
+SchemaAdapter
+      ↓
+OpenAI Function Tool Schema
+```
+
+## Orchestration
+
+The `AgentOrchestrator` coordinates:
+
+```text
+LLM
+ ↓
+Tool selection
+ ↓
+MCP execution
+ ↓
+Tool result
+ ↓
+LLM
+ ↓
+Final response
+```
+
+This is the central component connecting the model with external capabilities.
+
+---
+
+# Troubleshooting
+
+### Address already in use
+
+If you see:
+
+```text
+[Errno 48] Address already in use
+```
+
+make sure the MCP server and FastAPI application are not using the same port.
+
+Recommended:
+
+```text
+MCP Server → 8001
+FastAPI    → 8080
+```
+
+### MCP 404 Not Found
+
+If you see:
+
+```text
+POST http://localhost:8080/mcp
+404 Not Found
+```
+
+the MCP client is connecting to the FastAPI server instead of the MCP server.
+
+Check:
+
+```env
+MCP_SERVER_URL=http://localhost:8001/mcp
+```
+
+### MCP Client is not connected
+
+If you see:
+
+```text
+RuntimeError:
+Client is not connected.
+```
+
+the FastMCP client needs to be used inside its async context:
+
+```python
+async with self.mcp_client:
+    tools = await self.mcp_client.list_tools()
+```
+
+### OpenAI `create_response` does not exist
+
+If you see:
+
+```text
+AttributeError:
+'OpenAI' object has no attribute 'create_response'
+```
+
+the orchestrator expects the project's `OpenAIClient` wrapper, not the raw OpenAI SDK client.
+
+Use:
+
+```python
+openai_client = OpenAIClient(
+    api_key=api_key
+)
+```
+
+### `object Response can't be used in 'await' expression`
+
+Make sure the async wrapper uses:
+
+```python
+from openai import AsyncOpenAI
+```
+
+and:
+
+```python
+self.client = AsyncOpenAI(
+    api_key=api_key
+)
+```
+
+### `tool_call_id` KeyError
+
+For Responses API function calls, use:
+
+```python
+tool_call["call_id"]
+```
+
+rather than:
+
+```python
+tool_call["tool_call_id"]
+```
+
+---
+
+# Current AI Architecture
+
+The project has now evolved from a traditional chatbot into an AI application with tool orchestration:
+
+```text
+                         ┌───────────────────┐
+                         │       User        │
+                         └─────────┬─────────┘
+                                   │
+                                   ▼
+                         ┌───────────────────┐
+                         │     FastAPI       │
+                         │    /ai/mcp        │
+                         └─────────┬─────────┘
+                                   │
+                                   ▼
+                     ┌──────────────────────────┐
+                     │    AgentOrchestrator     │
+                     │                          │
+                     │ Tool discovery           │
+                     │ Tool selection           │
+                     │ Tool execution           │
+                     │ Result handling          │
+                     └──────┬───────────┬───────┘
+                            │           │
+                    OpenAI  │           │ MCP
+                            │           │
+                            ▼           ▼
+                    ┌───────────┐  ┌───────────┐
+                    │  OpenAI   │  │  FastMCP  │
+                    │   Model   │  │   Server  │
+                    └───────────┘  └─────┬─────┘
+                                         │
+                                         ▼
+                                  Backend Tools
+```
+
+This architecture separates:
+
+* **API layer** — FastAPI
+* **AI orchestration** — AgentOrchestrator
+* **LLM integration** — OpenAIClient
+* **Tool communication** — MCPClient
+* **Tool schema conversion** — SchemaAdapter
+* **Backend capabilities** — FastMCP tools
+
+The MCP server is now successfully connected to the chatbot, completing the core **LLM → Agent Orchestrator → MCP → Tool → LLM** integration.

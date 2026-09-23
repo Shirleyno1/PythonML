@@ -1,3 +1,6 @@
+from dataclasses import dataclass
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -7,3 +10,10 @@ class AIResponse(BaseModel):
     summary: str = Field(description="A concise summary of the answer")
 
     key_points: list[str] = Field(description="The keypoints of the answer")
+
+@dataclass
+class ToolCall:
+    call_id: str
+    name: str
+    arguments: dict[str, Any]
+

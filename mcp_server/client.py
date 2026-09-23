@@ -1,26 +1,28 @@
-import asyncio
-
 from fastmcp import Client
 
 
-client = Client("http://localhost:8080/mcp")
+class MCPClient:
 
-async def main():
-    async with client:
-        tools = await client.list_tools()
+    def __init__(self, server_url: str):
+        self.client = Client(server_url)
 
-        for tool in tools:
-            print(tool.name)
+    async def __aenter__(self):
+        await self.client.__aenter__()
+        return self
 
-        result = await client.call_tool(
-            "search_posts",
-            {
-                "user_id": "8ab40467-7cee-4f87-8cf6-b8852462c826"
-            }
-        )
+    async def __aexit__(self, exc_type, exc, tb):
+        return await self.client.__aexit__(exc_type, exc, tb)
 
-        print(result)
+    async def list_tools(self):
+        """ List all the available tools
+        Use list_tools_mcp if tools number is too large and use pagination"""
+
+        tools = await self.client.list_tools()
+        return tools
+
+    async def call_tool(self, name: str, arguments: dict):
+        return await self.client.call_tool(name, arguments)
+
+# client = Client("http://localhost:8080/mcp")
 
 
-if __name__ == "__main__":
-    asyncio.run(main())

@@ -13,8 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from chatbot.ai_service import generate_structured_response, classify_message
 from chatbot.classifier import UserIntent
 from chatbot.coversation_store import add_message, get_conversation
+from chatbot.openai_client import OpenAIClient
+from chatbot.orchestrator import AgentOrchestrator
 from chatbot.schemas import ChatRequest, ChatResponse
 from common.logging_config import setup_logging
+from mcp_server.client import MCPClient
+from mcp_server.schema_adapter import SchemaAdapter
 from posts.app import posts_router, get_posts, upload_file, delete_post
 from posts.db import get_async_session, User, create_db_tables
 from posts.schema import UserRead, UserUpdate, UserCreate
@@ -42,6 +46,18 @@ app.include_router(fastapi_users.get_verify_router(UserRead), prefix="/auth", ta
 app.include_router(fastapi_users.get_users_router(UserRead, UserUpdate), prefix="/users", tags=["users"])
 
 client = OpenAI(api_key=api_key)
+
+client_wrapped = OpenAIClient(api_key=api_key)
+
+mcp_client = MCPClient(server_url="http://localhost:8001/mcp")
+schema_adapter = SchemaAdapter()
+
+orchestrator=AgentOrchestrator(
+    openai_client=client_wrapped,
+    mcp_client=mcp_client,
+    schema_adapter=schema_adapter,
+)
+
 
 @app.post("/chat", response_model = ChatResponse)
 def chat(request: ChatRequest):
@@ -131,6 +147,16 @@ async def ai_endpoint(
 
 
     return await decide_by_user_intent(intent, session=session, user=user)
+
+@app.post("/ai/mcp")
+async def ai_mcp(
+        request: ChatRequest,
+        session: AsyncSession = Depends(get_async_session),
+        user: User = Depends(current_active_user),
+):
+    result = await orchestrator.run_agent(message=request.message)
+
+    return result
 
 
 @app.post("/rag")

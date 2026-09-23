@@ -9,7 +9,7 @@ from fastapi_users_db_sqlalchemy import SQLAlchemyUserDatabase
 
 from posts.db import User, get_user_db
 
-SECRET = ""
+SECRET = "string"
 
 
 class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):

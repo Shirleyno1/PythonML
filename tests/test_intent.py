@@ -1,3 +1,5 @@
+import pytest
+
 from chatbot.ai_service import classify_message
 
 

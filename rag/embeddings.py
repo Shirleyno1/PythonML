@@ -1,6 +1,4 @@
 from chromadb.utils import embedding_functions
-from dotenv import load_dotenv
-from openai import OpenAI
 
 
 class EmbeddingService:

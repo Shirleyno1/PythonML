@@ -1,6 +1,5 @@
 
 
-
 class TextChunker:
     def __init__(
             self,

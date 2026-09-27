@@ -11,6 +11,6 @@ async def search_posts(user_id: str) -> list:
         result = await service.get_posts(user_id)
         return result["posts"]
 
-@tool
-async def langchain_rag(question: str):
-
+# @tool
+# async def langchain_rag(question: str):
+#

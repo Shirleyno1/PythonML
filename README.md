@@ -6,6 +6,23 @@ The project uses **FastAPI + OpenAI + FastMCP + MCP Client** to allow the AI age
 
 ---
 
+## Start the Chatbot API
+
+From the project root, start the FastAPI application with:
+
+```bash
+uvicorn chatbot.main:app --reload --host 0.0.0.0 --port 8080
+```
+
+The API will be available on port `8080`.
+
+* `chatbot.main` → `chatbot/main.py`
+* `app` → the FastAPI application instance
+* `--reload` → automatically reloads when code changes
+* `--host 0.0.0.0` → listens on all network interfaces
+* `--port 8080` → runs the API on port 8080
+
+
 ## Architecture
 
 The current AI/MCP architecture is:

@@ -17,6 +17,9 @@ from chatbot.openai_client import OpenAIClient
 from chatbot.orchestrator import AgentOrchestrator
 from chatbot.schemas import ChatRequest, ChatResponse
 from common.logging_config import setup_logging
+from langchain.rag.chain import rag_chain
+from langchain.rag.main import context
+from langchain.rag.retrievers import retriever
 from mcp_server.client import MCPClient
 from mcp_server.schema_adapter import SchemaAdapter
 from posts.app import posts_router, get_posts, upload_file, delete_post
@@ -171,6 +174,22 @@ async def rag(
     )
 
     return result
+
+@app.post("/langchain/rag")
+async def langchain_rag(
+        request: ChatRequest,
+):
+    documents = await retriever.ainvoke(request.message)
+
+    response = await rag_chain.ainvoke(
+        {
+            "question": request.message,
+            "context": documents
+        }
+    )
+
+    return {"answer": response.content}
+
 
 async def classify_with_retry(
         message: str,

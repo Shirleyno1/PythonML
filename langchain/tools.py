@@ -10,3 +10,7 @@ async def search_posts(user_id: str) -> list:
     async with get_post_service() as service:
         result = await service.get_posts(user_id)
         return result["posts"]
+
+@tool
+async def langchain_rag(question: str):
+

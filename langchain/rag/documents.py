@@ -10,19 +10,14 @@ from langchain.rag.embeddings import embeddings
 #     }
 # )
 
-loader = PyPDFLoader("./data/Resturaunt Q&A.pdf")
+def load_pdf(path: str):
+    loader = PyPDFLoader(path)
 
-documents = loader.load()
+    return loader.load()
 
-splitter = RecursiveCharacterTextSplitter(
-    chunk_size=500,
-    chunk_overlap=50,
-)
-
-for document in documents:
-    chunks = splitter.split_documents([document])
-
-    # for chunk in chunks:
-        # print(chunk.page_content)
-
-
+def split_documents(documents: list):
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=500,
+        chunk_overlap=50,
+    )
+    return splitter.split_documents(documents)

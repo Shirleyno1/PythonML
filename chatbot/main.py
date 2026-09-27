@@ -18,7 +18,6 @@ from chatbot.orchestrator import AgentOrchestrator
 from chatbot.schemas import ChatRequest, ChatResponse
 from common.logging_config import setup_logging
 from langchain.rag.chain import rag_chain
-from langchain.rag.main import context
 from langchain.rag.retrievers import retriever
 from mcp_server.client import MCPClient
 from mcp_server.schema_adapter import SchemaAdapter

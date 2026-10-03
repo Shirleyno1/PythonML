@@ -2,20 +2,26 @@ import asyncio
 import logging
 import os
 import time
+import uuid
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from openai import OpenAI
+from openai.types.responses import ResponseTextDeltaEvent
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from chatbot.agui.events import RunStartedEvent, TextMessageStartEvent, TextMessageContentEvent, TextMessageEndEvent, \
+    RunFinishedEvent
+from chatbot.agui.models import AgUiRequest
 from chatbot.ai_service import generate_structured_response, classify_message
 from chatbot.classifier import UserIntent
 from chatbot.coversation_store import add_message, get_conversation
 from chatbot.openai_client import OpenAIClient
 from chatbot.orchestrator import AgentOrchestrator
 from chatbot.schemas import ChatRequest, ChatResponse
+from chatbot.util import extract_delta_text
 from common.logging_config import setup_logging
 from langchain.rag.chain import rag_chain
 from langchain.rag.retrievers import retriever
@@ -188,6 +194,53 @@ async def langchain_rag(
     )
 
     return {"answer": response.content}
+
+@app.post("/ai/agui")
+async def agui(request: AgUiRequest):
+
+    async def event_stream():
+        thread_id = request.thread_id
+        run_id = request.run_id
+        message_id = str(uuid.uuid4())
+
+        yield RunStartedEvent(
+            thread_id=thread_id,
+            run_id=run_id
+        ).to_sse()
+
+        yield TextMessageStartEvent(
+            message_id=message_id,
+            role="assistant"
+        ).to_sse()
+
+        stream = client.responses.create(
+            model="gpt-5-mini",
+            input=request.message,
+            stream=True,
+        )
+
+        # 4. Stream OpenAI text
+        for event in stream:
+
+            if isinstance(event, ResponseTextDeltaEvent):
+                yield TextMessageContentEvent(
+                    message_id=message_id,
+                    delta=event.delta,
+                ).to_sse()
+
+        yield TextMessageEndEvent(
+            message_id=message_id
+        ).to_sse()
+
+        yield RunFinishedEvent(
+            thread_id=thread_id,
+            run_id=run_id
+        ).to_sse()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+    )
 
 
 async def classify_with_retry(

@@ -17,6 +17,7 @@ from chatbot.agui.events import RunStartedEvent, TextMessageStartEvent, TextMess
 from chatbot.agui.models import AgUiRequest
 from chatbot.ai_service import generate_structured_response, classify_message
 from chatbot.classifier import UserIntent
+from chatbot.conversation_store.service import ConversationService
 from chatbot.coversation_store import add_message, get_conversation
 from chatbot.openai_client import OpenAIClient
 from chatbot.orchestrator import AgentOrchestrator
@@ -24,7 +25,7 @@ from chatbot.schemas import ChatRequest, ChatResponse
 from chatbot.util import extract_delta_text
 from common.logging_config import setup_logging
 from langchain.rag.chain import rag_chain
-from langchain.rag.retrievers import retriever
+from langchain.rag.retrievers import RagRetriever
 from mcp_server.client import MCPClient
 from mcp_server.schema_adapter import SchemaAdapter
 from posts.app import posts_router, get_posts, upload_file, delete_post
@@ -184,6 +185,7 @@ async def rag(
 async def langchain_rag(
         request: ChatRequest,
 ):
+    retriever = RagRetriever(file_path="./data/Resturaunt Q&A.pdf").get_retriever()
     documents = await retriever.ainvoke(request.message)
 
     response = await rag_chain.ainvoke(
@@ -196,7 +198,15 @@ async def langchain_rag(
     return {"answer": response.content}
 
 @app.post("/ai/agui")
-async def agui(request: AgUiRequest):
+async def agui(
+        request: AgUiRequest,
+        session: AsyncSession = Depends(get_async_session),
+):
+    # conversation_service = ConversationService(session=session)
+    # conversation = await conversation_service.get_or_create_conversation(
+    #     conversation_id=request.thread_id,
+    #     user_id=uuid.UUID("8ab40467-7cee-4f87-8cf6-b8852462c826")
+    # )
 
     async def event_stream():
         thread_id = request.thread_id

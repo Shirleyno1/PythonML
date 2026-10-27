@@ -57,8 +57,11 @@ app.include_router(fastapi_users.get_users_router(UserRead, UserUpdate), prefix=
 client = OpenAI(api_key=api_key)
 
 client_wrapped = OpenAIClient(api_key=api_key)
+mcp_server_url = os.getenv("MCP_SERVER_URL", "http://localhost:8001/mcp")
 
-mcp_client = MCPClient(server_url="http://localhost:8001/mcp")
+mcp_client = MCPClient(
+    server_url=mcp_server_url
+)
 schema_adapter = SchemaAdapter()
 
 orchestrator=AgentOrchestrator(

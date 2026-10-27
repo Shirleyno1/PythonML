@@ -1,14 +1,23 @@
 from datetime import datetime
 import uuid
 from collections.abc import AsyncGenerator
+
+from dotenv import load_dotenv
 from fastapi_users.db import SQLAlchemyUserDatabase, SQLAlchemyBaseUserTableUUID
 from fastapi import Depends
 from sqlalchemy import Column, String, Text, DateTime, ForeignKey
 from sqlalchemy.dialects.postgresql.base import UUID
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import DeclarativeBase, relationship
+import os
 
-DATABASE_URL = "sqlite+aiosqlite:///test1.db"
+DEFAULT_URL = "sqlite+aiosqlite:///test1.db"
+load_dotenv()
+
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+     DEFAULT_URL,
+)
 
 class Base(DeclarativeBase):
     pass

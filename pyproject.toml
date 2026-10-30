@@ -11,15 +11,17 @@ dependencies = [
     "fastapi-users[sqlalchemy]>=14.0.2",
     "fastmcp>=3.4.11",
     "imagekitio>=5.9.0",
-    "langchain-cli>=0.0.37",
     "langchain-community>=0.4.2",
     "langchain-openai>=1.7.2",
     "openai>=2.48.0",
     "pydantic>=2.13.5",
-    "pygame>=2.6.1",
     "pypdf>=6.21.2",
     "python-dotenv>=1.2.1",
     "sqlalchemy>=2.0.52",
-    "streamlit>=1.50.0",
     "uvicorn[standard]>=0.39.0",
+]
+
+[dependency-groups]
+dev = [
+    "streamlit>=1.66.1",
 ]

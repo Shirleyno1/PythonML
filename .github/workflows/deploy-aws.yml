@@ -46,13 +46,32 @@ jobs:
       id-token: write
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
-      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      API_ECR_REPOSITORY: ${{ vars.API_ECR_REPOSITORY }}
+      MCP_ECR_REPOSITORY: ${{ vars.MCP_ECR_REPOSITORY }}
       ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
       API_ECS_SERVICE: ${{ vars.API_ECS_SERVICE }}
       MCP_ECS_SERVICE: ${{ vars.MCP_ECS_SERVICE }}
     steps:
       - name: Check out source
         uses: actions/checkout@v5
+
+      - name: Validate deployment configuration
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "$AWS_REGION" ] || missing+=(AWS_REGION)
+          [ -n "$AWS_ROLE_ARN" ] || missing+=(AWS_ROLE_ARN)
+          [ -n "$API_ECR_REPOSITORY" ] || missing+=(API_ECR_REPOSITORY)
+          [ -n "$MCP_ECR_REPOSITORY" ] || missing+=(MCP_ECR_REPOSITORY)
+          [ -n "$ECS_CLUSTER" ] || missing+=(ECS_CLUSTER)
+          [ -n "$API_ECS_SERVICE" ] || missing+=(API_ECS_SERVICE)
+          [ -n "$MCP_ECS_SERVICE" ] || missing+=(MCP_ECS_SERVICE)
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf 'Set these GitHub Actions repository variables before deploying: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -73,14 +92,17 @@ jobs:
           DATE_TAG="$(date -u +%Y-%m-%d)"
           echo "date_tag=$DATE_TAG" >> "$GITHUB_OUTPUT"
 
-          for service in api mcp-server; do
-            docker build \
-              --tag "$ECR_REGISTRY/$ECR_REPOSITORY:$service-$DATE_TAG" \
-              --tag "$ECR_REGISTRY/$ECR_REPOSITORY:$service-$GITHUB_SHA" \
-              .
-            docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$service-$DATE_TAG"
-            docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$service-$GITHUB_SHA"
-          done
+          docker build \
+            --tag "$ECR_REGISTRY/$API_ECR_REPOSITORY:api-$DATE_TAG" \
+            --tag "$ECR_REGISTRY/$API_ECR_REPOSITORY:api-$GITHUB_SHA" \
+            --tag "$ECR_REGISTRY/$MCP_ECR_REPOSITORY:mcp-server-$DATE_TAG" \
+            --tag "$ECR_REGISTRY/$MCP_ECR_REPOSITORY:mcp-server-$GITHUB_SHA" \
+            .
+
+          docker push "$ECR_REGISTRY/$API_ECR_REPOSITORY:api-$DATE_TAG"
+          docker push "$ECR_REGISTRY/$API_ECR_REPOSITORY:api-$GITHUB_SHA"
+          docker push "$ECR_REGISTRY/$MCP_ECR_REPOSITORY:mcp-server-$DATE_TAG"
+          docker push "$ECR_REGISTRY/$MCP_ECR_REPOSITORY:mcp-server-$GITHUB_SHA"
 
       - name: Register task definitions and deploy services
         env:
@@ -88,17 +110,11 @@ jobs:
           DATE_TAG: ${{ steps.images.outputs.date_tag }}
         run: |
           set -euo pipefail
-          if [ -z "$AWS_REGION" ] || [ -z "$ECR_REPOSITORY" ] || \
-             [ -z "$ECS_CLUSTER" ] || [ -z "$API_ECS_SERVICE" ] || \
-             [ -z "$MCP_ECS_SERVICE" ]; then
-            echo "Set AWS_REGION, ECR_REPOSITORY, ECS_CLUSTER, API_ECS_SERVICE, and MCP_ECS_SERVICE in GitHub Actions variables." >&2
-            exit 1
-          fi
-
           deploy_service() {
             local service_name="$1"
             local container_name="$2"
-            local image_tag="$3"
+            local repository="$3"
+            local image_tag="$4"
             local current_task_definition
             local new_task_definition
 
@@ -117,7 +133,7 @@ jobs:
               --query taskDefinition \
               --output json |
               jq --arg name "$container_name" \
-                 --arg image "$ECR_REGISTRY/$ECR_REPOSITORY:$image_tag" '
+                 --arg image "$ECR_REGISTRY/$repository:$image_tag" '
                 if ([.containerDefinitions[] | select(.name == $name)] | length) != 1 then
                   error("Expected exactly one container named " + $name)
                 else
@@ -150,5 +166,5 @@ jobs:
               --services "$service_name"
           }
 
-          deploy_service "$API_ECS_SERVICE" api "api-$DATE_TAG"
-          deploy_service "$MCP_ECS_SERVICE" mcp-server "mcp-server-$DATE_TAG"
+          deploy_service "$API_ECS_SERVICE" api "$API_ECR_REPOSITORY" "api-$DATE_TAG"
+          deploy_service "$MCP_ECS_SERVICE" mcp-server "$MCP_ECR_REPOSITORY" "mcp-server-$DATE_TAG"

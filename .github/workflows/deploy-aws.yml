@@ -102,23 +102,19 @@ jobs:
           echo "::group::Build and push API and MCP images"
           DATE_TAG="$(date -u +%Y-%m-%d)"
           echo "date_tag=$DATE_TAG" >> "$GITHUB_OUTPUT"
-          printf 'Image tag suffixes: %s and %s\n' "$DATE_TAG" "$GITHUB_SHA"
+          printf 'Using image tag: %s\n' "$DATE_TAG"
 
           echo "Building the application image..."
           docker build \
-            --tag "$ECR_REGISTRY/$API_ECR_REPOSITORY:api-$DATE_TAG" \
-            --tag "$ECR_REGISTRY/$API_ECR_REPOSITORY:api-$GITHUB_SHA" \
-            --tag "$ECR_REGISTRY/$MCP_ECR_REPOSITORY:mcp-server-$DATE_TAG" \
-            --tag "$ECR_REGISTRY/$MCP_ECR_REPOSITORY:mcp-server-$GITHUB_SHA" \
+            --tag "$ECR_REGISTRY/$API_ECR_REPOSITORY:$DATE_TAG" \
+            --tag "$ECR_REGISTRY/$MCP_ECR_REPOSITORY:$DATE_TAG" \
             .
 
           echo "Pushing API image to $API_ECR_REPOSITORY..."
-          docker push "$ECR_REGISTRY/$API_ECR_REPOSITORY:api-$DATE_TAG"
-          docker push "$ECR_REGISTRY/$API_ECR_REPOSITORY:api-$GITHUB_SHA"
+          docker push "$ECR_REGISTRY/$API_ECR_REPOSITORY:$DATE_TAG"
 
           echo "Pushing MCP image to $MCP_ECR_REPOSITORY..."
-          docker push "$ECR_REGISTRY/$MCP_ECR_REPOSITORY:mcp-server-$DATE_TAG"
-          docker push "$ECR_REGISTRY/$MCP_ECR_REPOSITORY:mcp-server-$GITHUB_SHA"
+          docker push "$ECR_REGISTRY/$MCP_ECR_REPOSITORY:$DATE_TAG"
           echo "Both images were pushed successfully."
           echo "::endgroup::"
 
@@ -196,7 +192,7 @@ jobs:
             echo "::endgroup::"
           }
 
-          deploy_service "$API_ECS_SERVICE" api "$API_ECR_REPOSITORY" "api-$DATE_TAG"
-          deploy_service "$MCP_ECS_SERVICE" mcp-server "$MCP_ECR_REPOSITORY" "mcp-server-$DATE_TAG"
+          deploy_service "$API_ECS_SERVICE" api "$API_ECR_REPOSITORY" "$DATE_TAG"
+          deploy_service "$MCP_ECS_SERVICE" mcp-server "$MCP_ECR_REPOSITORY" "$DATE_TAG"
           echo "Both ECS services deployed successfully."
           echo "::endgroup::"

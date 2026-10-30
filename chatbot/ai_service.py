@@ -1,3 +1,4 @@
+from functools import lru_cache
 import os
 
 from dotenv import load_dotenv
@@ -8,13 +9,20 @@ from chatbot.classifier import UserIntent
 
 load_dotenv()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+@lru_cache(maxsize=1)
+def _get_client() -> OpenAI:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY must be configured to use AI features.")
+    return OpenAI(api_key=api_key)
+
 
 def generate_structured_response(
         message: str
 ) -> AIResponse:
 
-    response = client.responses.parse(
+    response = _get_client().responses.parse(
         model="gpt-5-mini",
         input=message,
         text_format=AIResponse
@@ -29,7 +37,7 @@ def classify_message(
 ):
 
     try:
-        response = client.responses.parse(
+        response = _get_client().responses.parse(
             model="gpt-5-mini",
             input=[
                 {

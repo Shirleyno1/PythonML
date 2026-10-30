@@ -118,6 +118,8 @@ def create_vector_store(documents, embeddings):
 The vector store contains the document embeddings and allows similarity searches.
 
 For this learning project, **FAISS** is used as the local vector store.
+The `faiss-cpu` dependency must be installed in the runtime; it is included in
+the project's `pyproject.toml` dependencies so it is available in the Docker image.
 
 ---
 

@@ -1,0 +1,154 @@
+name: Test and deploy to AWS
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api-mcp-production
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-groups
+
+      - name: Run tests
+        run: uv run --with pytest python -m pytest
+
+      - name: Build Docker image
+        run: docker build --tag mcp-server:test .
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      API_ECS_SERVICE: ${{ vars.API_ECS_SERVICE }}
+      MCP_ECS_SERVICE: ${{ vars.MCP_ECS_SERVICE }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push API and MCP images
+        id: images
+        env:
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          DATE_TAG="$(date -u +%Y-%m-%d)"
+          echo "date_tag=$DATE_TAG" >> "$GITHUB_OUTPUT"
+
+          for service in api mcp-server; do
+            docker build \
+              --tag "$ECR_REGISTRY/$ECR_REPOSITORY:$service-$DATE_TAG" \
+              --tag "$ECR_REGISTRY/$ECR_REPOSITORY:$service-$GITHUB_SHA" \
+              .
+            docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$service-$DATE_TAG"
+            docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$service-$GITHUB_SHA"
+          done
+
+      - name: Register task definitions and deploy services
+        env:
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+          DATE_TAG: ${{ steps.images.outputs.date_tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "$AWS_REGION" ] || [ -z "$ECR_REPOSITORY" ] || \
+             [ -z "$ECS_CLUSTER" ] || [ -z "$API_ECS_SERVICE" ] || \
+             [ -z "$MCP_ECS_SERVICE" ]; then
+            echo "Set AWS_REGION, ECR_REPOSITORY, ECS_CLUSTER, API_ECS_SERVICE, and MCP_ECS_SERVICE in GitHub Actions variables." >&2
+            exit 1
+          fi
+
+          deploy_service() {
+            local service_name="$1"
+            local container_name="$2"
+            local image_tag="$3"
+            local current_task_definition
+            local new_task_definition
+
+            current_task_definition="$(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services "$service_name" \
+              --query 'services[0].taskDefinition' \
+              --output text)"
+            if [ -z "$current_task_definition" ] || [ "$current_task_definition" = "None" ]; then
+              echo "Could not find ECS service '$service_name' in cluster '$ECS_CLUSTER'." >&2
+              exit 1
+            fi
+
+            aws ecs describe-task-definition \
+              --task-definition "$current_task_definition" \
+              --query taskDefinition \
+              --output json |
+              jq --arg name "$container_name" \
+                 --arg image "$ECR_REGISTRY/$ECR_REPOSITORY:$image_tag" '
+                if ([.containerDefinitions[] | select(.name == $name)] | length) != 1 then
+                  error("Expected exactly one container named " + $name)
+                else
+                  .containerDefinitions |= map(
+                    if .name == $name then .image = $image else . end
+                  )
+                  | del(
+                      .taskDefinitionArn,
+                      .revision,
+                      .status,
+                      .requiresAttributes,
+                      .compatibilities,
+                      .registeredAt,
+                      .registeredBy
+                    )
+                end
+              ' > task-definition.json
+
+            new_task_definition="$(aws ecs register-task-definition \
+              --cli-input-json file://task-definition.json \
+              --query 'taskDefinition.taskDefinitionArn' \
+              --output text)"
+            aws ecs update-service \
+              --cluster "$ECS_CLUSTER" \
+              --service "$service_name" \
+              --task-definition "$new_task_definition" \
+              --output json
+            aws ecs wait services-stable \
+              --cluster "$ECS_CLUSTER" \
+              --services "$service_name"
+          }
+
+          deploy_service "$API_ECS_SERVICE" api "api-$DATE_TAG"
+          deploy_service "$MCP_ECS_SERVICE" mcp-server "mcp-server-$DATE_TAG"

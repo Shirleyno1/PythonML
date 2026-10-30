@@ -54,6 +54,26 @@ The API will be available on port `8080`.
 * `--host 0.0.0.0` → listens on all network interfaces
 * `--port 8080` → runs the API on port 8080
 
+## Deploy the API and MCP server to AWS
+
+`.github/workflows/deploy-aws.yml` runs the tests and builds the Docker image for pull requests to `main`. On pushes to `main` (including merge commits), it builds and pushes API and MCP server images to ECR, then updates both ECS services and waits for them to become stable. Each image gets a service-specific UTC date tag (`api-YYYY-MM-DD` or `mcp-server-YYYY-MM-DD`) and a commit-SHA tag for traceability. Configure the ECR repository for mutable tags so a second deployment on the same UTC day can update that day's tag.
+
+One-time AWS setup:
+
+1. Create one mutable ECR repository for both application images.
+2. Create two ECS Fargate services in the same cluster. Their task definitions must use this ECR repository and contain containers named `api` and `mcp-server`, respectively. The API container uses the Dockerfile's default command and exposes port `8080`; the MCP container runs `python -m mcp_server.server` and exposes port `8001`. Configure their task execution role, networking, and runtime settings. The API must be able to reach the MCP service, and both services must be able to reach the database.
+3. Use Amazon RDS for PostgreSQL, rather than deploying PostgreSQL as a dated application image. Configure database backups and security groups, then provide the application database URL to both ECS task definitions via Secrets Manager. Add other required application environment variables/secrets there as well.
+4. Configure an IAM role for GitHub Actions using GitHub's OIDC provider. Restrict its trust policy to this repository's `main` branch. Grant it permission to push to the ECR repository, describe/register ECS task definitions, update and describe both ECS services, and pass the task roles used by the task definitions.
+5. Add these repository **Actions variables** under Settings → Secrets and variables → Actions:
+   - `AWS_REGION`: the AWS region containing ECR and ECS.
+   - `AWS_ROLE_ARN`: the IAM role ARN from step 4.
+   - `ECR_REPOSITORY`: the ECR repository name.
+   - `ECS_CLUSTER`: the ECS cluster name.
+   - `API_ECS_SERVICE`: the ECS service name for the API.
+   - `MCP_ECS_SERVICE`: the ECS service name for the MCP server.
+
+The workflow uses short-lived AWS credentials via OIDC; it does not require AWS access keys in GitHub. PostgreSQL is managed separately by RDS and is not rebuilt or redeployed by this workflow.
+
 # 2. High-Level Architecture
 
 The project contains several layers:

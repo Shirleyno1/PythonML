@@ -5,57 +5,117 @@ import uuid
 from typing import Annotated
 
 from posts.dependencies import get_post_service
-from posts.repository import PostRepository
 from posts.service import PostService
 from posts.users import current_active_user
 from fastapi import HTTPException, UploadFile, File, Form, Depends, APIRouter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from posts.db import get_async_session, Post, User
+from posts.db import get_async_session, Post, PostImage, User
 from posts.images import imagekit
 
 
 posts_router = APIRouter(prefix="/posts", tags=["posts"])
 
-@posts_router.post("/upload")
+@posts_router.post(
+    "/upload",
+    summary="Upload a list of images",
+    description=(
+        "Upload one or more images using multipart/form-data. "
+        "Repeat the `file` field for each image. "
+        "The caption and description apply to the whole post, not each image."
+    ),
+)
 async def upload_file(
-        file: UploadFile = File(...),
-        caption: str = Form(""),
+        files: list[UploadFile] = File(
+            ...,
+            alias="file",
+            description="One or more image files. Repeat this field to upload multiple images.",
+            json_schema_extra={"items": {"type": "string", "format": "binary"}},
+        ),
+        caption: str = Form("", description="Caption for the post."),
+        description: str = Form("", description="Description for the post."),
         user: User = Depends(current_active_user),
         session: AsyncSession = Depends(get_async_session),
 ):
-    temp_file_path = None
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as temp_file:
-            temp_file_path = temp_file.name
-            shutil.copyfileobj(file.file, temp_file)
+        if not files:
+            raise HTTPException(status_code=422, detail="At least one image file is required.")
 
-        upload_result = imagekit.files.upload(
-            file = open(temp_file_path, "rb"),
-            file_name = file.filename,
+        post = Post(
+            id=str(uuid.uuid4()),
+            caption=caption,
+            description=description,
+            user_id=user.id,
         )
+        session.add(post)
 
-        if upload_result.url:
-        # if True:
-            post = Post(
-                caption=caption,
-                user_id=user.id,
-                url = upload_result.url,
-                file_type="video" if file.content_type.startswith("video") else "image",
-                file_name=upload_result.name,
-            )
-            session.add(post)
-            await  session.commit()
-            await session.refresh(post)
-            return post
+        for position, file in enumerate(files):
+            suffix = os.path.splitext(os.path.basename(file.filename or ""))[1]
+            temp_file_path = None
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+                    temp_file_path = temp_file.name
+                    shutil.copyfileobj(file.file, temp_file)
 
+                with open(temp_file_path, "rb") as temp_file:
+                    upload_result = imagekit.files.upload(
+                        file=temp_file,
+                        file_name=file.filename or os.path.basename(temp_file_path),
+                    )
+
+                if not upload_result.url:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Image upload failed for {file.filename or 'an uploaded file'}.",
+                    )
+
+                post.images.append(
+                    PostImage(
+                        url=upload_result.url,
+                        file_type="video" if (file.content_type or "").startswith("video/") else "image",
+                        file_name=upload_result.name,
+                        position=position,
+                    )
+                )
+            finally:
+                if temp_file_path and os.path.exists(temp_file_path):
+                    os.unlink(temp_file_path)
+
+        await session.commit()
+        result = await session.execute(
+            select(Post)
+            .options(selectinload(Post.images))
+            .where(Post.id == post.id)
+        )
+        post = result.scalar_one()
+        return {
+            "id": post.id,
+            "user_id": str(post.user_id),
+            "caption": post.caption,
+            "description": post.description,
+            "created_at": post.created_at,
+            "images": [
+                {
+                    "id": image.id,
+                    "url": image.url,
+                    "file_name": image.file_name,
+                    "file_type": image.file_type,
+                    "position": image.position,
+                }
+                for image in post.images
+            ],
+        }
+    except HTTPException:
+        await session.rollback()
+        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(e)) from e
     finally:
-        if temp_file_path and os.path.exists(temp_file_path):
-            os.unlink(temp_file_path)
-        file.file.close()
+        for file in files:
+            await file.close()
 
 
 @posts_router.get("/")

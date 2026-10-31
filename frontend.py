@@ -67,14 +67,27 @@ def login_page():
 def upload_page():
     st.title("📸 Share Something")
 
-    uploaded_file = st.file_uploader("Choose media", type=['png', 'jpg', 'jpeg', 'mp4', 'avi', 'mov', 'mkv', 'webm'])
-    caption = st.text_area("Caption:", placeholder="What's on your mind?")
+    uploaded_files = st.file_uploader(
+        "Choose images",
+        type=['png', 'jpg', 'jpeg', 'mp4', 'avi', 'mov', 'mkv', 'webm'],
+        accept_multiple_files=True,
+    )
+    caption = st.text_input("Caption")
+    description = st.text_area("Description", placeholder="Describe this set of images")
 
-    if uploaded_file and st.button("Share", type="primary"):
+    if uploaded_files and st.button("Share", type="primary"):
         with st.spinner("Uploading..."):
-            files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
-            data = {"caption": caption}
-            response = requests.post("http://localhost:8000/upload", files=files, data=data, headers=get_headers())
+            files = [
+                ("file", (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type or "application/octet-stream"))
+                for uploaded_file in uploaded_files
+            ]
+            data = {"caption": caption, "description": description}
+            response = requests.post(
+                "http://localhost:8000/posts/upload",
+                files=files,
+                data=data,
+                headers=get_headers(),
+            )
 
             if response.status_code == 200:
                 st.success("Posted!")
@@ -114,7 +127,7 @@ def create_transformed_url(original_url, transformation_params, caption=None):
 def feed_page():
     st.title("🏠 Feed")
 
-    response = requests.get("http://localhost:8000/feed", headers=get_headers())
+    response = requests.get("http://localhost:8000/posts/", headers=get_headers())
     if response.status_code == 200:
         posts = response.json()["posts"]
 
@@ -140,16 +153,23 @@ def feed_page():
                         else:
                             st.error("Failed to delete post!")
 
-            # Uniform media display with caption overlay
-            caption = post.get('caption', '')
-            if post['file_type'] == 'image':
-                uniform_url = create_transformed_url(post['url'], "", caption)
-                st.image(uniform_url, width=300)
-            else:
-                # For videos: specify only height to maintain aspect ratio + caption overlay
-                uniform_video_url = create_transformed_url(post['url'], "w-400,h-200,cm-pad_resize,bg-blurred")
-                st.video(uniform_video_url, width=300)
-                st.caption(caption)
+            caption = post.get("caption") or ""
+            if caption:
+                st.write(caption)
+            description = post.get("description") or ""
+            if description:
+                st.write(description)
+
+            images = post.get("images") or []
+            for image in images:
+                if image["file_type"] == "image":
+                    st.image(image["url"], width=300)
+                else:
+                    uniform_video_url = create_transformed_url(
+                        image["url"],
+                        "w-400,h-200,cm-pad_resize,bg-blurred",
+                    )
+                    st.video(uniform_video_url, width=300)
 
             st.markdown("")  # Space between posts
     else:

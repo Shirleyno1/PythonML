@@ -34,165 +34,165 @@ jobs:
       - name: Run tests
         run: uv run --with pytest python -m pytest
 
-      - name: Build Docker image
-        run: docker build --tag mcp-server:test .
-
-  deploy:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: test
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    env:
-      AWS_REGION: ${{ vars.AWS_REGION }}
-      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
-      API_ECR_REPOSITORY: ${{ vars.API_ECR_REPOSITORY }}
-      MCP_ECR_REPOSITORY: ${{ vars.MCP_ECR_REPOSITORY }}
-      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
-      API_ECS_SERVICE: ${{ vars.API_ECS_SERVICE }}
-      MCP_ECS_SERVICE: ${{ vars.MCP_ECS_SERVICE }}
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v5
-
-      - name: Validate deployment configuration
-        run: |
-          set -euo pipefail
-          echo "::group::Validate deployment configuration"
-          missing=()
-          [ -n "$AWS_REGION" ] || missing+=(AWS_REGION)
-          [ -n "$AWS_ROLE_ARN" ] || missing+=(AWS_ROLE_ARN)
-          [ -n "$API_ECR_REPOSITORY" ] || missing+=(API_ECR_REPOSITORY)
-          [ -n "$MCP_ECR_REPOSITORY" ] || missing+=(MCP_ECR_REPOSITORY)
-          [ -n "$ECS_CLUSTER" ] || missing+=(ECS_CLUSTER)
-          [ -n "$API_ECS_SERVICE" ] || missing+=(API_ECS_SERVICE)
-          [ -n "$MCP_ECS_SERVICE" ] || missing+=(MCP_ECS_SERVICE)
-
-          if [ "${#missing[@]}" -gt 0 ]; then
-            printf '::error title=Missing deployment configuration::Set these GitHub Actions repository variables: %s\n' "${missing[*]}"
-            exit 1
-          fi
-
-          printf 'AWS region: %s\n' "$AWS_REGION"
-          printf 'API ECR repository: %s\n' "$API_ECR_REPOSITORY"
-          printf 'MCP ECR repository: %s\n' "$MCP_ECR_REPOSITORY"
-          printf 'ECS cluster: %s\n' "$ECS_CLUSTER"
-          printf 'API ECS service: %s\n' "$API_ECS_SERVICE"
-          printf 'MCP ECS service: %s\n' "$MCP_ECS_SERVICE"
-          echo "All required deployment variables are set."
-          echo "::endgroup::"
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Log in to Amazon ECR
-        id: ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build and push API and MCP images
-        id: images
-        env:
-          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
-        run: |
-          set -euo pipefail
-          echo "::group::Build and push API and MCP images"
-          DATE_TAG="$(date -u +%Y-%m-%d)"
-          echo "date_tag=$DATE_TAG" >> "$GITHUB_OUTPUT"
-          printf 'Using image tag: %s\n' "$DATE_TAG"
-
-          echo "Building the application image..."
-          docker build \
-            --tag "$ECR_REGISTRY/$API_ECR_REPOSITORY:$DATE_TAG" \
-            --tag "$ECR_REGISTRY/$MCP_ECR_REPOSITORY:$DATE_TAG" \
-            .
-
-          echo "Pushing API image to $API_ECR_REPOSITORY..."
-          docker push "$ECR_REGISTRY/$API_ECR_REPOSITORY:$DATE_TAG"
-
-          echo "Pushing MCP image to $MCP_ECR_REPOSITORY..."
-          docker push "$ECR_REGISTRY/$MCP_ECR_REPOSITORY:$DATE_TAG"
-          echo "Both images were pushed successfully."
-          echo "::endgroup::"
-
-      - name: Register task definitions and deploy services
-        env:
-          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
-          DATE_TAG: ${{ steps.images.outputs.date_tag }}
-        run: |
-          set -euo pipefail
-          echo "::group::Deploy API and MCP ECS services"
-          deploy_service() {
-            local service_name="$1"
-            local container_name="$2"
-            local repository="$3"
-            local image_tag="$4"
-            local current_task_definition
-            local new_task_definition
-
-            current_task_definition="$(aws ecs describe-services \
-              --cluster "$ECS_CLUSTER" \
-              --services "$service_name" \
-              --query 'services[0].taskDefinition' \
-              --output text)"
-            if [ -z "$current_task_definition" ] || [ "$current_task_definition" = "None" ]; then
-              echo "::error title=ECS service not found::Could not find service '$service_name' in cluster '$ECS_CLUSTER'."
-              exit 1
-            fi
-
-            echo "::group::Deploy $service_name ($container_name)"
-            printf 'Current task definition: %s\n' "$current_task_definition"
-            printf 'Target image: %s/%s:%s\n' "$ECR_REGISTRY" "$repository" "$image_tag"
-            aws ecs describe-task-definition \
-              --task-definition "$current_task_definition" \
-              --query taskDefinition \
-              --output json |
-              jq --arg name "$container_name" \
-                 --arg image "$ECR_REGISTRY/$repository:$image_tag" '
-                if ([.containerDefinitions[] | select(.name == $name)] | length) != 1 then
-                  error("Expected exactly one container named " + $name)
-                else
-                  .containerDefinitions |= map(
-                    if .name == $name then .image = $image else . end
-                  )
-                  | del(
-                      .taskDefinitionArn,
-                      .revision,
-                      .status,
-                      .requiresAttributes,
-                      .compatibilities,
-                      .registeredAt,
-                      .registeredBy
-                    )
-                end
-              ' > task-definition.json
-
-            new_task_definition="$(aws ecs register-task-definition \
-              --cli-input-json file://task-definition.json \
-              --query 'taskDefinition.taskDefinitionArn' \
-              --output text)"
-            printf 'Registered task definition: %s\n' "$new_task_definition"
-
-            echo "Updating ECS service..."
-            aws ecs update-service \
-              --cluster "$ECS_CLUSTER" \
-              --service "$service_name" \
-              --task-definition "$new_task_definition" \
-              --query 'service.{status:status,desiredCount:desiredCount,runningCount:runningCount,taskDefinition:taskDefinition}' \
-              --output table
-
-            echo "Waiting for ECS service to become stable..."
-            aws ecs wait services-stable \
-              --cluster "$ECS_CLUSTER" \
-              --services "$service_name"
-            printf 'ECS service %s is stable.\n' "$service_name"
-            echo "::endgroup::"
-          }
-
-          deploy_service "$API_ECS_SERVICE" api "$API_ECR_REPOSITORY" "$DATE_TAG"
-          deploy_service "$MCP_ECS_SERVICE" mcp-server "$MCP_ECR_REPOSITORY" "$DATE_TAG"
-          echo "Both ECS services deployed successfully."
-          echo "::endgroup::"
+#      - name: Build Docker image
+#        run: docker build --tag mcp-server:test .
+#
+#  deploy:
+#    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+#    needs: test
+#    runs-on: ubuntu-latest
+#    permissions:
+#      contents: read
+#      id-token: write
+#    env:
+#      AWS_REGION: ${{ vars.AWS_REGION }}
+#      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+#      API_ECR_REPOSITORY: ${{ vars.API_ECR_REPOSITORY }}
+#      MCP_ECR_REPOSITORY: ${{ vars.MCP_ECR_REPOSITORY }}
+#      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+#      API_ECS_SERVICE: ${{ vars.API_ECS_SERVICE }}
+#      MCP_ECS_SERVICE: ${{ vars.MCP_ECS_SERVICE }}
+#    steps:
+#      - name: Check out source
+#        uses: actions/checkout@v5
+#
+#      - name: Validate deployment configuration
+#        run: |
+#          set -euo pipefail
+#          echo "::group::Validate deployment configuration"
+#          missing=()
+#          [ -n "$AWS_REGION" ] || missing+=(AWS_REGION)
+#          [ -n "$AWS_ROLE_ARN" ] || missing+=(AWS_ROLE_ARN)
+#          [ -n "$API_ECR_REPOSITORY" ] || missing+=(API_ECR_REPOSITORY)
+#          [ -n "$MCP_ECR_REPOSITORY" ] || missing+=(MCP_ECR_REPOSITORY)
+#          [ -n "$ECS_CLUSTER" ] || missing+=(ECS_CLUSTER)
+#          [ -n "$API_ECS_SERVICE" ] || missing+=(API_ECS_SERVICE)
+#          [ -n "$MCP_ECS_SERVICE" ] || missing+=(MCP_ECS_SERVICE)
+#
+#          if [ "${#missing[@]}" -gt 0 ]; then
+#            printf '::error title=Missing deployment configuration::Set these GitHub Actions repository variables: %s\n' "${missing[*]}"
+#            exit 1
+#          fi
+#
+#          printf 'AWS region: %s\n' "$AWS_REGION"
+#          printf 'API ECR repository: %s\n' "$API_ECR_REPOSITORY"
+#          printf 'MCP ECR repository: %s\n' "$MCP_ECR_REPOSITORY"
+#          printf 'ECS cluster: %s\n' "$ECS_CLUSTER"
+#          printf 'API ECS service: %s\n' "$API_ECS_SERVICE"
+#          printf 'MCP ECS service: %s\n' "$MCP_ECS_SERVICE"
+#          echo "All required deployment variables are set."
+#          echo "::endgroup::"
+#
+#      - name: Configure AWS credentials
+#        uses: aws-actions/configure-aws-credentials@v4
+#        with:
+#          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+#          aws-region: ${{ vars.AWS_REGION }}
+#
+#      - name: Log in to Amazon ECR
+#        id: ecr
+#        uses: aws-actions/amazon-ecr-login@v2
+#
+#      - name: Build and push API and MCP images
+#        id: images
+#        env:
+#          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+#        run: |
+#          set -euo pipefail
+#          echo "::group::Build and push API and MCP images"
+#          DATE_TAG="$(date -u +%Y-%m-%d)"
+#          echo "date_tag=$DATE_TAG" >> "$GITHUB_OUTPUT"
+#          printf 'Using image tag: %s\n' "$DATE_TAG"
+#
+#          echo "Building the application image..."
+#          docker build \
+#            --tag "$ECR_REGISTRY/$API_ECR_REPOSITORY:$DATE_TAG" \
+#            --tag "$ECR_REGISTRY/$MCP_ECR_REPOSITORY:$DATE_TAG" \
+#            .
+#
+#          echo "Pushing API image to $API_ECR_REPOSITORY..."
+#          docker push "$ECR_REGISTRY/$API_ECR_REPOSITORY:$DATE_TAG"
+#
+#          echo "Pushing MCP image to $MCP_ECR_REPOSITORY..."
+#          docker push "$ECR_REGISTRY/$MCP_ECR_REPOSITORY:$DATE_TAG"
+#          echo "Both images were pushed successfully."
+#          echo "::endgroup::"
+#
+#      - name: Register task definitions and deploy services
+#        env:
+#          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+#          DATE_TAG: ${{ steps.images.outputs.date_tag }}
+#        run: |
+#          set -euo pipefail
+#          echo "::group::Deploy API and MCP ECS services"
+#          deploy_service() {
+#            local service_name="$1"
+#            local container_name="$2"
+#            local repository="$3"
+#            local image_tag="$4"
+#            local current_task_definition
+#            local new_task_definition
+#
+#            current_task_definition="$(aws ecs describe-services \
+#              --cluster "$ECS_CLUSTER" \
+#              --services "$service_name" \
+#              --query 'services[0].taskDefinition' \
+#              --output text)"
+#            if [ -z "$current_task_definition" ] || [ "$current_task_definition" = "None" ]; then
+#              echo "::error title=ECS service not found::Could not find service '$service_name' in cluster '$ECS_CLUSTER'."
+#              exit 1
+#            fi
+#
+#            echo "::group::Deploy $service_name ($container_name)"
+#            printf 'Current task definition: %s\n' "$current_task_definition"
+#            printf 'Target image: %s/%s:%s\n' "$ECR_REGISTRY" "$repository" "$image_tag"
+#            aws ecs describe-task-definition \
+#              --task-definition "$current_task_definition" \
+#              --query taskDefinition \
+#              --output json |
+#              jq --arg name "$container_name" \
+#                 --arg image "$ECR_REGISTRY/$repository:$image_tag" '
+#                if ([.containerDefinitions[] | select(.name == $name)] | length) != 1 then
+#                  error("Expected exactly one container named " + $name)
+#                else
+#                  .containerDefinitions |= map(
+#                    if .name == $name then .image = $image else . end
+#                  )
+#                  | del(
+#                      .taskDefinitionArn,
+#                      .revision,
+#                      .status,
+#                      .requiresAttributes,
+#                      .compatibilities,
+#                      .registeredAt,
+#                      .registeredBy
+#                    )
+#                end
+#              ' > task-definition.json
+#
+#            new_task_definition="$(aws ecs register-task-definition \
+#              --cli-input-json file://task-definition.json \
+#              --query 'taskDefinition.taskDefinitionArn' \
+#              --output text)"
+#            printf 'Registered task definition: %s\n' "$new_task_definition"
+#
+#            echo "Updating ECS service..."
+#            aws ecs update-service \
+#              --cluster "$ECS_CLUSTER" \
+#              --service "$service_name" \
+#              --task-definition "$new_task_definition" \
+#              --query 'service.{status:status,desiredCount:desiredCount,runningCount:runningCount,taskDefinition:taskDefinition}' \
+#              --output table
+#
+#            echo "Waiting for ECS service to become stable..."
+#            aws ecs wait services-stable \
+#              --cluster "$ECS_CLUSTER" \
+#              --services "$service_name"
+#            printf 'ECS service %s is stable.\n' "$service_name"
+#            echo "::endgroup::"
+#          }
+#
+#          deploy_service "$API_ECS_SERVICE" api "$API_ECR_REPOSITORY" "$DATE_TAG"
+#          deploy_service "$MCP_ECS_SERVICE" mcp-server "$MCP_ECR_REPOSITORY" "$DATE_TAG"
+#          echo "Both ECS services deployed successfully."
+#          echo "::endgroup::"

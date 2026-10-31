@@ -15,11 +15,20 @@ class PostService:
                 "id": post.id,
                 "user_id": str(post.user_id),
                 "caption": post.caption,
-                "file_name": post.file_name,
-                "file_type": post.file_type,
+                "description": post.description,
                 "created_at": post.created_at,
-                "is_owner": post.user_id == user_id,
-                "email": "Unknown",
+                "is_owner": str(post.user_id) == str(user_id),
+                "email": post.user.email if post.user is not None else "Unknown",
+                "images": [
+                    {
+                        "id": image.id,
+                        "url": image.url,
+                        "file_name": image.file_name,
+                        "file_type": image.file_type,
+                        "position": image.position,
+                    }
+                    for image in post.images
+                ],
             }
             for post in rows
         ]
@@ -28,4 +37,3 @@ class PostService:
 
     async def delete_post(self, post_id: str, user_id: int):
         await self.repository.delete_post(post_id, user_id)
-

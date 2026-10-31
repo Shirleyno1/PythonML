@@ -14,7 +14,7 @@ class PostRepository:
     async def get_posts(self):
         result = await self.session.execute(
             select(Post)
-            .options(selectinload(Post.user))
+            .options(selectinload(Post.user), selectinload(Post.images))
             .order_by(Post.created_at.desc())
         )
 
@@ -22,9 +22,9 @@ class PostRepository:
 
     async def delete_post(self, post_id: str, user_id: int):
         result = await self.session.execute(
-            select(Post).where(
-                Post.id == post_id
-            )
+            select(Post)
+            .options(selectinload(Post.images))
+            .where(Post.id == post_id)
         )
 
         post = result.scalars().first()

@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import logging
 import os
 import time
@@ -12,6 +13,7 @@ from openai import OpenAI
 from openai.types.responses import ResponseTextDeltaEvent
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import posts
 from chatbot.agui.events import RunStartedEvent, TextMessageStartEvent, TextMessageContentEvent, TextMessageEndEvent, \
     RunFinishedEvent
 from chatbot.agui.models import AgUiRequest
@@ -47,6 +49,19 @@ async def lifespan(app: FastAPI):
     yield
 app = FastAPI(lifespan=lifespan)
 app.include_router(posts_router)
+
+print("========== DEBUG UPLOAD API ==========")
+
+print("Imported posts.app from:")
+print(posts.app.__file__)
+
+print("Upload function source:")
+print(inspect.getfile(upload_file))
+
+print("Upload function signature:")
+print(inspect.signature(upload_file))
+
+print("======================================")
 
 app.include_router(fastapi_users.get_auth_router(auth_backend), prefix="/auth/jwt", tags=["auth"])
 app.include_router(fastapi_users.get_register_router(UserRead, UserCreate), prefix="/auth", tags=["auth"])
@@ -320,7 +335,9 @@ async def user_search(
             {
                 "id": post["id"],
                 "title": post["caption"],
-                "content": post["file_name"]
+                "content": post.get("description") or ", ".join(
+                    image["file_name"] for image in post.get("images", [])
+                ),
             }
             for post in posts["posts"]
         ]
@@ -333,9 +350,11 @@ async def user_create(intent):
         "intent": "create",
         "status": "success",
         "post": {
-            "id": post.id,
-            "title": post.caption,
-            "content": post.file_name
+            "id": post["id"],
+            "title": post["caption"],
+            "content": post.get("description") or ", ".join(
+                image["file_name"] for image in post.get("images", [])
+            ),
         }
     }
 
@@ -365,5 +384,4 @@ async def user_delete(
 
 async def general():
     pass
-
 

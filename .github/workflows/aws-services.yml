@@ -1,0 +1,116 @@
+name: Start or stop AWS services
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Start or stop the API and MCP ECS services
+        required: true
+        type: choice
+        options:
+          - start
+          - stop
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: api-mcp-production
+  cancel-in-progress: false
+
+jobs:
+  manage-services:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      API_ECS_SERVICE: ${{ vars.API_ECS_SERVICE }}
+      MCP_ECS_SERVICE: ${{ vars.MCP_ECS_SERVICE }}
+      ACTION: ${{ inputs.action }}
+    steps:
+      - name: Validate configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "$AWS_REGION" ]] || missing+=(AWS_REGION)
+          [[ -n "$AWS_ROLE_ARN" ]] || missing+=(AWS_ROLE_ARN)
+          [[ -n "$ECS_CLUSTER" ]] || missing+=(ECS_CLUSTER)
+          [[ -n "$API_ECS_SERVICE" ]] || missing+=(API_ECS_SERVICE)
+          [[ -n "$MCP_ECS_SERVICE" ]] || missing+=(MCP_ECS_SERVICE)
+          if (( ${#missing[@]} )); then
+            printf 'Missing GitHub Actions repository variables: %s\n' "${missing[*]}"
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Verify AWS account and manage services
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          expected_account_id="$(awk -F: '{print $5}' <<< "$AWS_ROLE_ARN")"
+          actual_account_id="$(aws sts get-caller-identity --query Account --output text)"
+          if [[ ! "$expected_account_id" =~ ^[0-9]{12}$ || "$actual_account_id" != "$expected_account_id" ]]; then
+            echo "::error::AWS identity account does not match the account in AWS_ROLE_ARN."
+            exit 1
+          fi
+          echo "Verified AWS account $actual_account_id in $AWS_REGION."
+
+          if [[ "$ACTION" == "start" ]]; then
+            desired_count=1
+            suspended=false
+          else
+            desired_count=0
+            suspended=true
+          fi
+
+          for service in "$API_ECS_SERVICE" "$MCP_ECS_SERVICE"; do
+            echo "::group::${ACTION^} $service"
+
+            status="$(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services "$service" \
+              --query 'services[0].status' \
+              --output text)"
+            if [[ "$status" == "None" || -z "$status" ]]; then
+              echo "::error::ECS service '$service' was not found in cluster '$ECS_CLUSTER'."
+              exit 1
+            fi
+
+            scalable_target_count="$(aws application-autoscaling describe-scalable-targets \
+              --service-namespace ecs \
+              --scalable-dimension ecs:service:DesiredCount \
+              --resource-id "service/$ECS_CLUSTER/$service" \
+              --query 'length(ScalableTargets)' \
+              --output text)"
+            if [[ "$scalable_target_count" != "0" ]]; then
+              aws application-autoscaling register-scalable-target \
+                --service-namespace ecs \
+                --scalable-dimension ecs:service:DesiredCount \
+                --resource-id "service/$ECS_CLUSTER/$service" \
+                --suspended-state \
+                "DynamicScalingInSuspended=$suspended,DynamicScalingOutSuspended=$suspended,ScheduledScalingSuspended=$suspended" \
+                >/dev/null
+            fi
+
+            aws ecs update-service \
+              --cluster "$ECS_CLUSTER" \
+              --service "$service" \
+              --desired-count "$desired_count" \
+              >/dev/null
+
+            echo "Waiting for $service to become stable..."
+            aws ecs wait services-stable \
+              --cluster "$ECS_CLUSTER" \
+              --services "$service"
+            echo "$service is stable with desired count $desired_count."
+            echo "::endgroup::"
+          done

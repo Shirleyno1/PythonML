@@ -8,7 +8,7 @@ async def search_posts(user_id: str) -> list:
     """Search posts using a text query"""
 
     async with get_post_service() as service:
-        result = await service.get_posts(user_id)
+        result = await service.get_my_posts(user_id)
         return result["posts"]
 
 # @tool

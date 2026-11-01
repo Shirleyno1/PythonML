@@ -30,7 +30,7 @@ from langchain.rag.chain import rag_chain
 from langchain.rag.retrievers import RagRetriever
 from mcp_server.client import MCPClient
 from mcp_server.schema_adapter import SchemaAdapter
-from posts.app import posts_router, get_posts, upload_file, delete_post
+from posts.app import posts_router, get_my_posts, upload_file, delete_post
 from posts.db import get_async_session, User, create_db_tables
 from posts.schema import UserRead, UserUpdate, UserCreate
 from posts.users import current_active_user, fastapi_users, auth_backend
@@ -325,7 +325,7 @@ async def user_search(
         user: User,
 ):
 
-    posts = await get_posts(session=session, user=user)
+    posts = await get_my_posts(session=session, user=user)
     print(posts)
 
     return {

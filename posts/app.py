@@ -7,7 +7,7 @@ from typing import Annotated
 from posts.dependencies import get_post_service
 from posts.service import PostService
 from posts.users import current_active_user
-from fastapi import HTTPException, UploadFile, File, Form, Depends, APIRouter
+from fastapi import HTTPException, UploadFile, File, Form, Depends, APIRouter, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -42,6 +42,11 @@ async def upload_file(
             alias="type",
             description="Post type: share or question.",
         ),
+        is_private: bool = Form(
+            False,
+            alias="isPrivate",
+            description="If true, only you can see this post.",
+        ),
         user: User = Depends(current_active_user),
         session: AsyncSession = Depends(get_async_session),
 ):
@@ -54,6 +59,7 @@ async def upload_file(
             caption=caption,
             description=description,
             post_type=post_type.value,
+            is_private=is_private,
             user_id=user.id,
         )
         session.add(post)
@@ -103,6 +109,7 @@ async def upload_file(
             "caption": post.caption,
             "description": post.description,
             "type": post.post_type,
+            "isPrivate": post.is_private,
             "created_at": post.created_at,
             "images": [
                 {
@@ -126,12 +133,28 @@ async def upload_file(
             await file.close()
 
 
-@posts_router.get("/")
-async def get_posts(
+@posts_router.get("/mine")
+async def get_my_posts(
         user: User = Depends(current_active_user),
         service: Annotated[PostService, Depends(get_post_service)] = None
 ):
-    return await service.get_posts(str(user.id))
+    return await service.get_my_posts(user.id)
+
+
+@posts_router.get(
+    "/search",
+    summary="Search public posts by type",
+    description=(
+        "Returns non-private posts of the selected type from all users, newest first."
+    ),
+)
+async def search_posts(
+        post_type: PostType = Query(..., alias="type"),
+        user: User = Depends(current_active_user),
+        service: Annotated[PostService, Depends(get_post_service)] = None,
+):
+    return await service.search_posts(user.id, post_type=post_type)
+
 
 @posts_router.delete("/{post_id}")
 async def delete_post(

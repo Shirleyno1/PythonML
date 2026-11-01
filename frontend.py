@@ -75,6 +75,7 @@ def upload_page():
     caption = st.text_input("Caption")
     description = st.text_area("Description", placeholder="Describe this set of images")
     post_type = st.selectbox("Post type", ["share", "question"])
+    is_private = st.checkbox("Make this post private")
 
     if uploaded_files and st.button("Share", type="primary"):
         with st.spinner("Uploading..."):
@@ -86,6 +87,7 @@ def upload_page():
                 "caption": caption,
                 "description": description,
                 "type": post_type,
+                "isPrivate": str(is_private).lower(),
             }
             response = requests.post(
                 "http://localhost:8000/posts/upload",
@@ -143,6 +145,8 @@ def feed_page():
         for post in posts:
             st.markdown("---")
             st.caption(f"Type: {post.get('type', 'share')}")
+            if post.get("isPrivate", False):
+                st.caption("Private")
 
             # Header with user, date, and delete button (if owner)
             col1, col2 = st.columns([4, 1])

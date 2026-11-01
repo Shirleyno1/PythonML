@@ -11,10 +11,24 @@ class PostRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def get_posts(self):
+    async def get_posts(self, user_id):
         result = await self.session.execute(
             select(Post)
             .options(selectinload(Post.user), selectinload(Post.images))
+            .where(Post.user_id == user_id)
+            .order_by(Post.created_at.desc())
+        )
+
+        return result.scalars().all()
+
+    async def search_posts(self, post_type: str):
+        result = await self.session.execute(
+            select(Post)
+            .options(selectinload(Post.user), selectinload(Post.images))
+            .where(
+                Post.post_type == post_type,
+                Post.is_private.is_(False),
+            )
             .order_by(Post.created_at.desc())
         )
 
@@ -37,4 +51,3 @@ class PostRepository:
 
         await self.session.delete(post)
         await self.session.commit()
-

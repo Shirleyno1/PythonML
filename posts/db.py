@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator
 from dotenv import load_dotenv
 from fastapi_users.db import SQLAlchemyUserDatabase, SQLAlchemyBaseUserTableUUID
 from fastapi import Depends
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, inspect, text
+from sqlalchemy import Boolean, Column, Integer, String, Text, DateTime, ForeignKey, inspect, text
 from sqlalchemy.dialects.postgresql.base import UUID
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import DeclarativeBase, relationship
@@ -40,6 +40,13 @@ class Post(Base):
         nullable=False,
         default=PostType.SHARE.value,
         server_default=PostType.SHARE.value,
+    )
+    is_private = Column(
+        "isPrivate",
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
     )
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -156,6 +163,10 @@ def _ensure_post_metadata_columns(connection):
     if "type" not in columns:
         connection.execute(
             text("ALTER TABLE posts ADD COLUMN type VARCHAR NOT NULL DEFAULT 'share'")
+        )
+    if "isPrivate" not in columns:
+        connection.execute(
+            text("ALTER TABLE posts ADD COLUMN isPrivate BOOLEAN NOT NULL DEFAULT FALSE")
         )
 
 

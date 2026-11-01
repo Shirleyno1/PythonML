@@ -74,6 +74,7 @@ def upload_page():
     )
     caption = st.text_input("Caption")
     description = st.text_area("Description", placeholder="Describe this set of images")
+    post_type = st.selectbox("Post type", ["share", "question"])
 
     if uploaded_files and st.button("Share", type="primary"):
         with st.spinner("Uploading..."):
@@ -81,7 +82,11 @@ def upload_page():
                 ("file", (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type or "application/octet-stream"))
                 for uploaded_file in uploaded_files
             ]
-            data = {"caption": caption, "description": description}
+            data = {
+                "caption": caption,
+                "description": description,
+                "type": post_type,
+            }
             response = requests.post(
                 "http://localhost:8000/posts/upload",
                 files=files,
@@ -137,6 +142,7 @@ def feed_page():
 
         for post in posts:
             st.markdown("---")
+            st.caption(f"Type: {post.get('type', 'share')}")
 
             # Header with user, date, and delete button (if owner)
             col1, col2 = st.columns([4, 1])

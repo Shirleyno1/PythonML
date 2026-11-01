@@ -16,6 +16,7 @@ class PostService:
                 "user_id": str(post.user_id),
                 "caption": post.caption,
                 "description": post.description,
+                "type": post.post_type,
                 "created_at": post.created_at,
                 "is_owner": str(post.user_id) == str(user_id),
                 "email": post.user.email if post.user is not None else "Unknown",

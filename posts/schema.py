@@ -1,7 +1,13 @@
 import uuid
+from enum import Enum
 
 from fastapi_users import schemas
 from pydantic import BaseModel
+
+
+class PostType(str, Enum):
+    SHARE = "share"
+    QUESTION = "question"
 
 
 class PostCreate(BaseModel):
@@ -20,4 +26,3 @@ class UserCreate(schemas.BaseUserCreate):
 
 class UserUpdate(schemas.BaseUserUpdate):
     pass
-

@@ -14,6 +14,7 @@ from sqlalchemy.orm import selectinload
 
 from posts.db import get_async_session, Post, PostImage, User
 from posts.images import imagekit
+from posts.schema import PostType
 
 
 posts_router = APIRouter(prefix="/posts", tags=["posts"])
@@ -36,6 +37,11 @@ async def upload_file(
         ),
         caption: str = Form("", description="Caption for the post."),
         description: str = Form("", description="Description for the post."),
+        post_type: PostType = Form(
+            PostType.SHARE,
+            alias="type",
+            description="Post type: share or question.",
+        ),
         user: User = Depends(current_active_user),
         session: AsyncSession = Depends(get_async_session),
 ):
@@ -47,6 +53,7 @@ async def upload_file(
             id=str(uuid.uuid4()),
             caption=caption,
             description=description,
+            post_type=post_type.value,
             user_id=user.id,
         )
         session.add(post)
@@ -95,6 +102,7 @@ async def upload_file(
             "user_id": str(post.user_id),
             "caption": post.caption,
             "description": post.description,
+            "type": post.post_type,
             "created_at": post.created_at,
             "images": [
                 {

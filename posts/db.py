@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from sqlalchemy.orm import DeclarativeBase, relationship
 import os
 
+from posts.schema import PostType
+
 DEFAULT_URL = "sqlite+aiosqlite:///test1.db"
 load_dotenv()
 
@@ -32,6 +34,13 @@ class Post(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False)
     caption = Column(Text)
     description = Column(Text)
+    post_type = Column(
+        "type",
+        String,
+        nullable=False,
+        default=PostType.SHARE.value,
+        server_default=PostType.SHARE.value,
+    )
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="posts")
@@ -132,11 +141,11 @@ async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
 async def create_db_tables():
     async with engine.begin() as conn:
         await conn.run_sync(migrate_legacy_posts)
-        await conn.run_sync(_ensure_post_description_column)
+        await conn.run_sync(_ensure_post_metadata_columns)
         await conn.run_sync(Base.metadata.create_all)
 
 
-def _ensure_post_description_column(connection):
+def _ensure_post_metadata_columns(connection):
     inspector = inspect(connection)
     if "posts" not in inspector.get_table_names():
         return
@@ -144,6 +153,10 @@ def _ensure_post_description_column(connection):
     columns = {column["name"] for column in inspector.get_columns("posts")}
     if "description" not in columns:
         connection.execute(text("ALTER TABLE posts ADD COLUMN description TEXT"))
+    if "type" not in columns:
+        connection.execute(
+            text("ALTER TABLE posts ADD COLUMN type VARCHAR NOT NULL DEFAULT 'share'")
+        )
 
 
 async def get_async_session() -> AsyncGenerator[AsyncSession, None]:

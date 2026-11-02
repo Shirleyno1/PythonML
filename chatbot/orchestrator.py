@@ -14,7 +14,7 @@ class AgentOrchestrator:
         self.mcp_client = mcp_client
         self.schema_adapter = schema_adapter
 
-    async def run_agent(self, message: str):
+    async def run_agent(self, message: str, user_id: str):
 
         async with self.mcp_client:
 
@@ -57,6 +57,8 @@ class AgentOrchestrator:
                     )
 
                     arguments = json.loads(tool_call["arguments"])
+                    if tool_call["name"] in {"search_posts", "delete_post"}:
+                        arguments["user_id"] = user_id
 
                     # 6. Call MCP dynamically
 
@@ -106,7 +108,5 @@ class AgentOrchestrator:
     ) -> str:
 
         return str(result)
-
-
 
 

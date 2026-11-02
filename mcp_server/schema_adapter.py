@@ -1,15 +1,30 @@
 
+from copy import deepcopy
+
 
 class SchemaAdapter:
 
     @staticmethod
     def mcp_tools_to_openai_tools(mcp_tools):
-        return [
-            {
+        openai_tools = []
+        for tool in mcp_tools:
+            parameters = deepcopy(tool.inputSchema)
+            if tool.name in {"search_posts", "delete_post"}:
+                parameters.get("properties", {}).pop("user_id", None)
+                required = parameters.get("required", [])
+                if "user_id" in required:
+                    required.remove("user_id")
+
+            openai_tools.append({
                 "type":  "function",
                 "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.inputSchema,
-            }
-            for tool in mcp_tools
-        ]
+                "description": (
+                    {
+                        "search_posts": "Search public posts from all users, optionally filtered by post type.",
+                        "delete_post": "Delete a post owned by the authenticated user.",
+                    }.get(tool.name, tool.description)
+                ),
+                "parameters": parameters,
+            })
+
+        return openai_tools

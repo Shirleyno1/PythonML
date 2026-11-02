@@ -181,7 +181,10 @@ async def ai_mcp(
         session: AsyncSession = Depends(get_async_session),
         user: User = Depends(current_active_user),
 ):
-    result = await orchestrator.run_agent(message=request.message)
+    result = await orchestrator.run_agent(
+        message=request.message,
+        user_id=str(user.id),
+    )
 
     return result
 
@@ -384,4 +387,3 @@ async def user_delete(
 
 async def general():
     pass
-

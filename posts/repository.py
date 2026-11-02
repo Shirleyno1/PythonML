@@ -34,7 +34,20 @@ class PostRepository:
 
         return result.scalars().all()
 
-    async def delete_post(self, post_id: str, user_id: int):
+    async def search_public_posts(self, post_type: str | None = None):
+        query = (
+            select(Post)
+            .options(selectinload(Post.user), selectinload(Post.images))
+            .where(Post.is_private.is_(False))
+            .order_by(Post.created_at.desc())
+        )
+        if post_type is not None:
+            query = query.where(Post.post_type == post_type)
+
+        result = await self.session.execute(query)
+        return result.scalars().all()
+
+    async def delete_post(self, post_id: str, user_id):
         result = await self.session.execute(
             select(Post)
             .options(selectinload(Post.images))

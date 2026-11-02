@@ -14,7 +14,12 @@ class AgentOrchestrator:
         self.mcp_client = mcp_client
         self.schema_adapter = schema_adapter
 
-    async def run_agent(self, message: str, user_id: str):
+    async def run_agent(
+        self,
+        message: str,
+        user_id: str,
+        history: list[dict[str, str]] | None = None,
+    ):
 
         async with self.mcp_client:
 
@@ -35,7 +40,14 @@ class AgentOrchestrator:
 
             # 3. Send user message + tools to OpenAI
 
-            response = await self.openai_client.create_response(message = message, tools = openai_tools)
+            input_messages = [
+                *(history or [])[-19:],
+                {"role": "user", "content": message},
+            ]
+            response = await self.openai_client.create_response(
+                message=input_messages,
+                tools=openai_tools,
+            )
 
             # 4. Agent loop
 
@@ -108,5 +120,4 @@ class AgentOrchestrator:
     ) -> str:
 
         return str(result)
-
 

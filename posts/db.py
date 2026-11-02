@@ -3,7 +3,10 @@ import uuid
 from collections.abc import AsyncGenerator
 
 from dotenv import load_dotenv
-from fastapi_users.db import SQLAlchemyUserDatabase, SQLAlchemyBaseUserTableUUID
+from fastapi_users_db_sqlalchemy import (
+    SQLAlchemyBaseUserTableUUID,
+    SQLAlchemyUserDatabase,
+)
 from fastapi import Depends
 from sqlalchemy import Boolean, Column, Integer, String, Text, DateTime, ForeignKey, inspect, text
 from sqlalchemy.dialects.postgresql.base import UUID

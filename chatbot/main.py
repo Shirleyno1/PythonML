@@ -24,14 +24,13 @@ from chatbot.coversation_store import add_message, get_conversation
 from chatbot.openai_client import OpenAIClient
 from chatbot.orchestrator import AgentOrchestrator
 from chatbot.schemas import ChatRequest, ChatResponse
-from chatbot.util import extract_delta_text
 from common.logging_config import setup_logging
 from langchain.rag.chain import rag_chain
 from langchain.rag.retrievers import RagRetriever
 from mcp_server.client import MCPClient
 from mcp_server.schema_adapter import SchemaAdapter
 from posts.app import posts_router, get_my_posts, upload_file, delete_post
-from posts.db import get_async_session, User, create_db_tables
+from posts.db import async_session_maker, get_async_session, User, create_db_tables
 from posts.schema import UserRead, UserUpdate, UserCreate
 from posts.users import current_active_user, fastapi_users, auth_backend
 from rag.service import RAGService
@@ -140,7 +139,7 @@ def generate_response(conversation_id: str, message: str):
 @app.post("/chat/stream")
 def chat_stream(request: ChatRequest):
     return StreamingResponse(
-        generate_response(conversation_id=request.conversation_id, message=request.message),
+        generate_response(conversation_id=str(request.conversation_id), message=request.message),
         media_type="text/plain"
     )
 
@@ -181,9 +180,30 @@ async def ai_mcp(
         session: AsyncSession = Depends(get_async_session),
         user: User = Depends(current_active_user),
 ):
+    conversation_service = ConversationService(session)
+    conversation_id = request.conversation_id
+    user_id = user.id
+    await conversation_service.get_or_create_conversation(conversation_id, user_id)
+    history = await conversation_service.get_recent_history(
+        conversation_id,
+        user_id,
+        limit=19,
+    )
+    await conversation_service.add_user_message(
+        conversation_id,
+        user_id,
+        request.message,
+    )
+
     result = await orchestrator.run_agent(
         message=request.message,
         user_id=str(user.id),
+        history=history,
+    )
+    await conversation_service.add_assistant_message(
+        conversation_id,
+        user_id,
+        result,
     )
 
     return result
@@ -222,17 +242,32 @@ async def langchain_rag(
 async def agui(
         request: AgUiRequest,
         session: AsyncSession = Depends(get_async_session),
+        user: User = Depends(current_active_user),
 ):
-    # conversation_service = ConversationService(session=session)
-    # conversation = await conversation_service.get_or_create_conversation(
-    #     conversation_id=request.thread_id,
-    #     user_id=uuid.UUID("8ab40467-7cee-4f87-8cf6-b8852462c826")
-    # )
+    conversation_id = request.thread_id
+    user_id = user.id
+    conversation_service = ConversationService(session)
+    await conversation_service.get_or_create_conversation(conversation_id, user_id)
+    history = await conversation_service.get_recent_history(
+        conversation_id,
+        user_id,
+        limit=19,
+    )
+    await conversation_service.add_user_message(
+        conversation_id,
+        user_id,
+        request.message,
+    )
+    input_messages = [
+        *history,
+        {"role": "user", "content": request.message},
+    ]
 
     async def event_stream():
-        thread_id = request.thread_id
+        thread_id = str(request.thread_id)
         run_id = request.run_id
         message_id = str(uuid.uuid4())
+        full_response = ""
 
         yield RunStartedEvent(
             thread_id=thread_id,
@@ -246,7 +281,7 @@ async def agui(
 
         stream = client.responses.create(
             model="gpt-5-mini",
-            input=request.message,
+            input=input_messages,
             stream=True,
         )
 
@@ -254,10 +289,18 @@ async def agui(
         for event in stream:
 
             if isinstance(event, ResponseTextDeltaEvent):
+                full_response += event.delta
                 yield TextMessageContentEvent(
                     message_id=message_id,
                     delta=event.delta,
                 ).to_sse()
+
+        async with async_session_maker() as message_session:
+            await ConversationService(message_session).add_assistant_message(
+                conversation_id,
+                user_id,
+                full_response,
+            )
 
         yield TextMessageEndEvent(
             message_id=message_id

@@ -2,7 +2,6 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from chatbot.conversation_store.models import Conversation, ConversationMessage
 
@@ -14,18 +13,11 @@ class ConversationRepository:
 
     async def get_conversation(
             self,
-            conversation_id: str,
-            user_id: UUID,
+            conversation_id: UUID,
     ) -> Conversation | None:
         result = await self.session.execute(
             select(Conversation)
-            .where(
-                Conversation.id == conversation_id,
-                Conversation.user_id == user_id,
-            )
-            .options(
-                selectinload(Conversation.messages)
-            )
+            .where(Conversation.id == conversation_id)
         )
 
         return result.scalar_one_or_none()
@@ -33,7 +25,7 @@ class ConversationRepository:
     async def create_conversation(
             self,
             user_id: UUID,
-            conversation_id: str
+            conversation_id: UUID,
     ) -> Conversation:
         conversation = Conversation(
             user_id=user_id,
@@ -47,7 +39,7 @@ class ConversationRepository:
 
     async def add_message(
             self,
-            conversation_id: str,
+            conversation_id: UUID,
             role: str,
             content: str,
     ) -> ConversationMessage:
@@ -63,3 +55,19 @@ class ConversationRepository:
         await self.session.flush()
 
         return message
+
+    async def get_recent_messages(
+            self,
+            conversation_id: UUID,
+            limit: int,
+    ) -> list[ConversationMessage]:
+        result = await self.session.execute(
+            select(ConversationMessage)
+            .where(ConversationMessage.conversation_id == conversation_id)
+            .order_by(
+                ConversationMessage.created_at.desc(),
+                ConversationMessage.id.desc(),
+            )
+            .limit(limit)
+        )
+        return list(reversed(result.scalars().all()))

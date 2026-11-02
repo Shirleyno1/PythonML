@@ -11,7 +11,7 @@ class OpenAIClient:
 
     async def create_response(
             self,
-            message: str,
+            message: str | list[dict[str, str]],
             tools: list
     ):
 

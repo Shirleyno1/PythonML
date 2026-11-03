@@ -1,4 +1,5 @@
 import json
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 
@@ -19,6 +20,7 @@ class AgentOrchestrator:
         message: str,
         user_id: str,
         history: list[dict[str, str]] | None = None,
+        on_tool_event: Callable[[dict[str, str]], Awaitable[None]] | None = None,
     ):
 
         async with self.mcp_client:
@@ -69,6 +71,32 @@ class AgentOrchestrator:
                     )
 
                     arguments = json.loads(tool_call["arguments"])
+                    public_arguments = dict(arguments)
+                    if tool_call["name"] in {"search_posts", "delete_post"}:
+                        public_arguments.pop("user_id", None)
+                    await self._emit_tool_event(
+                        on_tool_event,
+                        {
+                            "type": "start",
+                            "tool_call_id": tool_call["call_id"],
+                            "tool_name": tool_call["name"],
+                        },
+                    )
+                    await self._emit_tool_event(
+                        on_tool_event,
+                        {
+                            "type": "args",
+                            "tool_call_id": tool_call["call_id"],
+                            "arguments": json.dumps(public_arguments),
+                        },
+                    )
+                    await self._emit_tool_event(
+                        on_tool_event,
+                        {
+                            "type": "end",
+                            "tool_call_id": tool_call["call_id"],
+                        },
+                    )
                     if tool_call["name"] in {"search_posts", "delete_post"}:
                         arguments["user_id"] = user_id
 
@@ -82,6 +110,14 @@ class AgentOrchestrator:
                     # 7. Convert MCP result into something OpenAI can read
 
                     tool_result = self._serialize_result(result)
+                    await self._emit_tool_event(
+                        on_tool_event,
+                        {
+                            "type": "result",
+                            "tool_call_id": tool_call["call_id"],
+                            "content": tool_result,
+                        },
+                    )
 
                     # 8. Give tool result back to the model
 
@@ -94,6 +130,13 @@ class AgentOrchestrator:
                         )
                     )
 
+    @staticmethod
+    async def _emit_tool_event(
+        callback: Callable[[dict[str, str]], Awaitable[None]] | None,
+        event: dict[str, str],
+    ) -> None:
+        if callback is not None:
+            await callback(event)
 
 
     @staticmethod
@@ -120,4 +163,3 @@ class AgentOrchestrator:
     ) -> str:
 
         return str(result)
-

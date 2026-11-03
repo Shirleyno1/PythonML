@@ -1,432 +1,84 @@
-import asyncio
-import inspect
-import logging
 import os
-import time
-import uuid
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Depends
-from fastapi.responses import StreamingResponse
-from openai import OpenAI
-from openai.types.responses import ResponseTextDeltaEvent
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import FastAPI
 
-import posts
-from chatbot.agui.events import RunStartedEvent, TextMessageStartEvent, TextMessageContentEvent, TextMessageEndEvent, \
-    RunFinishedEvent
-from chatbot.agui.models import AgUiRequest
-from chatbot.ai_service import generate_structured_response, classify_message
-from chatbot.classifier import UserIntent
-from chatbot.conversation_store.service import ConversationService
-from chatbot.coversation_store import add_message, get_conversation
 from chatbot.openai_client import OpenAIClient
 from chatbot.orchestrator import AgentOrchestrator
-from chatbot.schemas import ChatRequest, ChatResponse
+from chatbot.routes import agui, ai, chat, mcp, rag
 from common.logging_config import setup_logging
-from langchain.rag.chain import rag_chain
-from langchain.rag.retrievers import RagRetriever
 from mcp_server.client import MCPClient
 from mcp_server.schema_adapter import SchemaAdapter
-from posts.app import posts_router, get_my_posts, upload_file, delete_post
-from posts.db import async_session_maker, get_async_session, User, create_db_tables
-from posts.schema import UserRead, UserUpdate, UserCreate
-from posts.users import current_active_user, fastapi_users, auth_backend
-from rag.service import RAGService
+from posts.app import posts_router
+from posts.db import create_db_tables
+from posts.schema import UserCreate, UserRead, UserUpdate
+from posts.users import auth_backend, fastapi_users
 
 load_dotenv()
-api_key = os.getenv("OPENAI_API_KEY")
-
 setup_logging()
-logger = logging.getLogger(__name__)
-environment = os.getenv("ENVIRONMENT", "development")
+
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI):
     await create_db_tables()
     yield
-app = FastAPI(lifespan=lifespan)
-app.include_router(posts_router)
-
-print("========== DEBUG UPLOAD API ==========")
-
-print("Imported posts.app from:")
-print(posts.app.__file__)
-
-print("Upload function source:")
-print(inspect.getfile(upload_file))
-
-print("Upload function signature:")
-print(inspect.signature(upload_file))
-
-print("======================================")
-
-app.include_router(fastapi_users.get_auth_router(auth_backend), prefix="/auth/jwt", tags=["auth"])
-app.include_router(fastapi_users.get_register_router(UserRead, UserCreate), prefix="/auth", tags=["auth"])
-app.include_router(fastapi_users.get_reset_password_router(), prefix="/auth", tags=["auth"])
-app.include_router(fastapi_users.get_verify_router(UserRead), prefix="/auth", tags=["auth"])
-app.include_router(fastapi_users.get_users_router(UserRead, UserUpdate), prefix="/users", tags=["users"])
-
-client = OpenAI(api_key=api_key)
-
-client_wrapped = OpenAIClient(api_key=api_key)
-mcp_server_url = os.getenv("MCP_SERVER_URL", "http://localhost:8001/mcp")
-
-mcp_client = MCPClient(
-    server_url=mcp_server_url
-)
-schema_adapter = SchemaAdapter()
-
-orchestrator=AgentOrchestrator(
-    openai_client=client_wrapped,
-    mcp_client=mcp_client,
-    schema_adapter=schema_adapter,
-)
 
 
-@app.post("/chat", response_model = ChatResponse)
-def chat(request: ChatRequest):
-    try:
-        response = client.responses.create(
-            model="gpt-5-mini",
-            input=[
-                {
-                    "role": "system",
-                    "content": "You are a helpful AI assistang. Answer clearly and concisely"
-                },
-                {
-                    "role": "user",
-                    "content": request.message
-                }
-            ]
-        )
-        return ChatResponse(answer=response.output_text)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal Server Error{str(e)}")
-
-def generate_response(conversation_id: str, message: str):
-    try:
-        add_message(
-            conversation_id=conversation_id,
-            role="user", content=message
-        )
-
-        history = get_conversation(conversation_id=conversation_id)
-        stream = client.responses.create(
-            model="gpt-5-mini",
-            input=history,
-            stream=True
-        )
-
-        full_response = ""
-
-        for event in stream:
-            if event.type == "response.output_text.delta":
-                delta = event.delta
-                full_response += delta
-                yield delta
-
-        add_message(
-            conversation_id=conversation_id,
-            role="assistant",
-            content=full_response
-        )
-    except Exception as e:
-        yield (f"\n[Error generating response: {e}]")
-
-
-@app.post("/chat/stream")
-def chat_stream(request: ChatRequest):
-    return StreamingResponse(
-        generate_response(conversation_id=str(request.conversation_id), message=request.message),
-        media_type="text/plain"
+def _include_auth_routers(application: FastAPI) -> None:
+    application.include_router(
+        fastapi_users.get_auth_router(auth_backend),
+        prefix="/auth/jwt",
+        tags=["auth"],
     )
-
-@app.post("/chat/structured")
-def chat_structured(request: ChatRequest):
-    result = generate_structured_response(request.message)
-
-    return result
-
-@app.post("/ai")
-async def ai_endpoint(
-    request: ChatRequest,
-    session: AsyncSession = Depends(get_async_session),
-    user: User = Depends(current_active_user),
-):
-    intent = await classify_with_retry(request.message)
-
-    if intent is None:
-        return {
-            "status": "error",
-            "message": {
-                "The AI service is temporary unavailable."
-            }
-        }
-
-    if intent.confidence < 0.7:
-        return {
-            "intent": "general",
-            "message": "I'm not sure what you want me to do"
-        }
-
-
-    return await decide_by_user_intent(intent, session=session, user=user)
-
-@app.post("/ai/mcp")
-async def ai_mcp(
-        request: ChatRequest,
-        session: AsyncSession = Depends(get_async_session),
-        user: User = Depends(current_active_user),
-):
-    conversation_service = ConversationService(session)
-    conversation_id = request.conversation_id
-    user_id = user.id
-    await conversation_service.get_or_create_conversation(conversation_id, user_id)
-    history = await conversation_service.get_recent_history(
-        conversation_id,
-        user_id,
-        limit=19,
+    application.include_router(
+        fastapi_users.get_register_router(UserRead, UserCreate),
+        prefix="/auth",
+        tags=["auth"],
     )
-    await conversation_service.add_user_message(
-        conversation_id,
-        user_id,
-        request.message,
+    application.include_router(
+        fastapi_users.get_reset_password_router(),
+        prefix="/auth",
+        tags=["auth"],
     )
-
-    result = await orchestrator.run_agent(
-        message=request.message,
-        user_id=str(user.id),
-        history=history,
+    application.include_router(
+        fastapi_users.get_verify_router(UserRead),
+        prefix="/auth",
+        tags=["auth"],
     )
-    await conversation_service.add_assistant_message(
-        conversation_id,
-        user_id,
-        result,
-    )
-
-    return result
-
-
-@app.post("/rag")
-async def rag(
-        request: ChatRequest,
-        session: AsyncSession = Depends(get_async_session),
-        user: User = Depends(current_active_user),
-):
-
-    result = await RAGService().answer(
-        question=request.message
-    )
-
-    return result
-
-@app.post("/langchain/rag")
-async def langchain_rag(
-        request: ChatRequest,
-):
-    retriever = RagRetriever(file_path="./data/Resturaunt Q&A.pdf").get_retriever()
-    documents = await retriever.ainvoke(request.message)
-
-    response = await rag_chain.ainvoke(
-        {
-            "question": request.message,
-            "context": documents
-        }
-    )
-
-    return {"answer": response.content}
-
-@app.post("/ai/agui")
-async def agui(
-        request: AgUiRequest,
-        session: AsyncSession = Depends(get_async_session),
-        user: User = Depends(current_active_user),
-):
-    conversation_id = request.thread_id
-    user_id = user.id
-    conversation_service = ConversationService(session)
-    await conversation_service.get_or_create_conversation(conversation_id, user_id)
-    history = await conversation_service.get_recent_history(
-        conversation_id,
-        user_id,
-        limit=19,
-    )
-    await conversation_service.add_user_message(
-        conversation_id,
-        user_id,
-        request.message,
-    )
-    input_messages = [
-        *history,
-        {"role": "user", "content": request.message},
-    ]
-
-    async def event_stream():
-        thread_id = str(request.thread_id)
-        run_id = request.run_id
-        message_id = str(uuid.uuid4())
-        full_response = ""
-
-        yield RunStartedEvent(
-            thread_id=thread_id,
-            run_id=run_id
-        ).to_sse()
-
-        yield TextMessageStartEvent(
-            message_id=message_id,
-            role="assistant"
-        ).to_sse()
-
-        stream = client.responses.create(
-            model="gpt-5-mini",
-            input=input_messages,
-            stream=True,
-        )
-
-        # 4. Stream OpenAI text
-        for event in stream:
-
-            if isinstance(event, ResponseTextDeltaEvent):
-                full_response += event.delta
-                yield TextMessageContentEvent(
-                    message_id=message_id,
-                    delta=event.delta,
-                ).to_sse()
-
-        async with async_session_maker() as message_session:
-            await ConversationService(message_session).add_assistant_message(
-                conversation_id,
-                user_id,
-                full_response,
-            )
-
-        yield TextMessageEndEvent(
-            message_id=message_id
-        ).to_sse()
-
-        yield RunFinishedEvent(
-            thread_id=thread_id,
-            run_id=run_id
-        ).to_sse()
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
+    application.include_router(
+        fastapi_users.get_users_router(UserRead, UserUpdate),
+        prefix="/users",
+        tags=["users"],
     )
 
 
-async def classify_with_retry(
-        message: str,
-        max_retries: int = 3,
-):
-    for attempt in range(max_retries):
-        try:
-
-            start = time.perf_counter()
-
-            result = classify_message(message)
-
-            duration = (
-                time.time() - start
-            )
-
-            logger.info(
-                "AI classification complete",
-                extra={
-                    "intent": result.intent,
-                    "confidence": result.confidence,
-                    "latency": duration
-                }
-            )
-            return result
-
-        except Exception as e:
-            if attempt == max_retries - 1:
-                print(f"Retried {max_retries} times and still fail with: {e}")
-                raise
-            await asyncio.sleep(2 ** attempt)
-    return None
-
-
-async def decide_by_user_intent(
-        intent: UserIntent,
-        session: AsyncSession,
-        user: User,
-):
-    if intent.intent == "search":
-        return await user_search(intent=intent, session=session, user=user)
-    if intent.intent == "create":
-        return await user_create(intent)
-    if intent.intent == "delete":
-        return await user_delete(intent=intent, session=session, user=user)
-    else:
-        return await general()
-
-
-async def user_search(
-        intent: UserIntent,
-        session: AsyncSession,
-        user: User,
-):
-
-    posts = await get_my_posts(session=session, user=user)
-    print(posts)
-
-    return {
-        "intent": "search",
-        "query": intent.query,
-        "results": [
-            {
-                "id": post["id"],
-                "title": post["caption"],
-                "content": post.get("description") or ", ".join(
-                    image["file_name"] for image in post.get("images", [])
-                ),
-            }
-            for post in posts["posts"]
-        ]
-    }
-
-async def user_create(intent):
-    post = await upload_file()
-
-    return {
-        "intent": "create",
-        "status": "success",
-        "post": {
-            "id": post["id"],
-            "title": post["caption"],
-            "content": post.get("description") or ", ".join(
-                image["file_name"] for image in post.get("images", [])
-            ),
-        }
-    }
-
-
-async def user_delete(
-        intent: UserIntent,
-        session: AsyncSession,
-        user: User,
-):
-
-    if not intent.query:
-         return {
-            "status": "missing_information",
-            "message": "Which post would you like to delete?"
-         }
-
-    result = await delete_post(
-        post_id=intent.query,
-        session=session,
-        user=user
+def configure_agent() -> None:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY must be configured to use AI features.")
+    agent = AgentOrchestrator(
+        openai_client=OpenAIClient(api_key=api_key),
+        mcp_client=MCPClient(
+            server_url=os.getenv("MCP_SERVER_URL", "http://localhost:8001/mcp")
+        ),
+        schema_adapter=SchemaAdapter(),
     )
+    mcp.configure_orchestrator(agent)
+    agui.configure_orchestrator(agent)
 
-    return {
-        "intent": "create",
-        "status": result,
-    }
 
-async def general():
-    pass
+def create_app() -> FastAPI:
+    configure_agent()
+    application = FastAPI(lifespan=lifespan)
+    application.include_router(posts_router)
+    application.include_router(chat.router)
+    application.include_router(ai.router)
+    application.include_router(mcp.router)
+    application.include_router(agui.router)
+    application.include_router(rag.router)
+    _include_auth_routers(application)
+    return application
+
+
+app = create_app()

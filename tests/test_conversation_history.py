@@ -181,11 +181,25 @@ def test_mcp_agent_receives_recent_history_and_trusted_user_id():
             MCPClient(),
             SchemaAdapter(),
         )
+        tool_events = []
+
+        async def record_tool_event(event):
+            tool_events.append(event)
+
         result = await orchestrator.run_agent(
             "find my posts",
             user_id,
             history=[{"role": "assistant", "content": "previous answer"}],
+            on_tool_event=record_tool_event,
         )
         assert result == "Here are your posts"
+        assert [event["type"] for event in tool_events] == [
+            "start",
+            "args",
+            "end",
+            "result",
+        ]
+        assert tool_events[1]["arguments"] == "{}"
+        assert tool_events[3]["content"] == "[]"
 
     asyncio.run(run())

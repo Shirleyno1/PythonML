@@ -815,6 +815,43 @@ This provides hands-on experience with the major building blocks of modern LLM a
 
 ---
 
+# LangSmith Tracing
+
+LangChain runnables and the AI/AG-UI request flows can be traced with LangSmith.
+Add these environment variables to `.env` to opt in:
+
+```dotenv
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=your-langsmith-api-key
+LANGSMITH_PROJECT=ai-post-management
+```
+
+Tracing is disabled by default. When enabled without `LANGSMITH_API_KEY`, the
+application reports a configuration error rather than silently skipping traces.
+Keep the API key private and do not commit `.env`.
+
+The examples under `langchain/` pass named runs and component tags to model and
+runnable calls. Run an example as a module, for example
+`uv run python -m langchain.chains`, to see its trace in the configured
+LangSmith project. Importing an example module does not call the model.
+
+The `/ai` endpoint records intent classification and a privacy-reduced summary
+of its result. AG-UI traces include the user message, conversation history,
+model output/tool selection, and MCP tool results; internal user IDs are
+excluded. Treat traced prompts and results as user data.
+
+Run the intent-classifier evaluation against the local examples and publish the
+experiment to LangSmith with:
+
+```shell
+uv run python -m evaluation.run_evaluation --langsmith
+```
+
+AG-UI agent runs are available in the project for evaluation with LangSmith
+evaluators configured for that project.
+
+---
+
 # 21. Main Takeaway
 
 The most important concept from this folder is that LangChain is a collection of composable abstractions.

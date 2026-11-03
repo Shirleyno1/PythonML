@@ -2,6 +2,8 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from observability.tracing import ai_traceable, trace_agent_input, trace_tool_input
+
 
 class AgentOrchestrator:
 
@@ -15,6 +17,12 @@ class AgentOrchestrator:
         self.mcp_client = mcp_client
         self.schema_adapter = schema_adapter
 
+    @ai_traceable(
+        name="AG-UI Agent Run",
+        component="agui-agent",
+        run_type="chain",
+        process_inputs=trace_agent_input,
+    )
     async def run_agent(
         self,
         message: str,
@@ -102,9 +110,9 @@ class AgentOrchestrator:
 
                     # 6. Call MCP dynamically
 
-                    result = await self.mcp_client.call_tool(
-                        name = tool_call["name"],
-                        arguments = arguments
+                    result = await self._call_tool(
+                        name=tool_call["name"],
+                        arguments=arguments,
                     )
 
                     # 7. Convert MCP result into something OpenAI can read
@@ -129,6 +137,15 @@ class AgentOrchestrator:
                             tools = openai_tools,
                         )
                     )
+
+    @ai_traceable(
+        name="AG-UI MCP Tool Call",
+        component="agui-tool",
+        run_type="tool",
+        process_inputs=trace_tool_input,
+    )
+    async def _call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        return await self.mcp_client.call_tool(name=name, arguments=arguments)
 
     @staticmethod
     async def _emit_tool_event(

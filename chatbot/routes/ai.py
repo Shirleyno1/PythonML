@@ -7,6 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from chatbot.ai_service import classify_message
 from chatbot.classifier import UserIntent
+from observability.tracing import (
+    ai_traceable,
+    trace_ai_request_input,
+    trace_ai_result,
+)
 from chatbot.schemas import ChatRequest
 from posts.app import delete_post, upload_file
 from posts.db import User, get_async_session
@@ -19,6 +24,13 @@ router = APIRouter()
 
 
 @router.post("/ai")
+@ai_traceable(
+    name="AI Post Management Request",
+    component="ai-request",
+    run_type="chain",
+    process_inputs=trace_ai_request_input,
+    process_outputs=trace_ai_result,
+)
 async def ai_endpoint(
     request: ChatRequest,
     session: AsyncSession = Depends(get_async_session),

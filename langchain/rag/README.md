@@ -316,6 +316,12 @@ Semantic Retrieval
 LLM Generation
 ```
 
+## LangSmith Tracing
+
+The `/langchain/rag` endpoint traces retrieval and generation together as
+`langchain-rag`, tagged with the `rag` component. Configure tracing as described
+in the parent LangChain README; it is disabled by default.
+
 ## Learning Goal
 
 This package is a **LangChain implementation of RAG** for learning and comparison with the original custom RAG implementation.

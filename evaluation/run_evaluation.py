@@ -1,7 +1,51 @@
 from collections import defaultdict
+import argparse
+import os
+from typing import Any
+from uuid import uuid4
 
 from chatbot.ai_service import classify_message
 from evaluation.intent_dataset import TEST_CASES
+from langsmith.evaluation import evaluate
+from langsmith.schemas import Example, Run
+
+
+def _predict_intent(inputs: dict[str, Any]) -> dict[str, str]:
+    result = classify_message(inputs["message"])
+    return {"intent": result.intent}
+
+
+def intent_accuracy(run: Run, example: Example) -> dict[str, str | bool]:
+    predicted = (run.outputs or {}).get("intent")
+    expected = (example.outputs or {}).get("intent")
+    return {
+        "key": "intent_accuracy",
+        "score": predicted == expected,
+    }
+
+
+def run_langsmith_evaluation():
+    if not os.getenv("LANGSMITH_API_KEY"):
+        raise RuntimeError(
+            "LANGSMITH_API_KEY is required to run a LangSmith evaluation."
+        )
+
+    dataset: list[Example] = [
+        Example(
+            id=uuid4(),
+            inputs={"message": test_case["message"]},
+            outputs={"intent": test_case["expected_intent"]},
+        )
+        for test_case in TEST_CASES
+    ]
+    return evaluate(
+        _predict_intent,
+        data=dataset,
+        evaluators=[intent_accuracy],
+        experiment_prefix="ai-intent-classifier",
+        description="Intent classification accuracy on the local intent dataset.",
+        metadata={"component": "ai-intent-classification"},
+    )
 
 
 def run_evaluation():
@@ -61,19 +105,30 @@ def evaluate_by_intent(results):
 
 
 if __name__ == "__main__":
-    results = run_evaluation()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--langsmith",
+        action="store_true",
+        help="Run the intent evaluation in LangSmith.",
+    )
+    args = parser.parse_args()
 
-    for result in results:
+    if args.langsmith:
+        run_langsmith_evaluation()
+        print("LangSmith evaluation completed.")
+    else:
+        results = run_evaluation()
 
-        print({
-            f"{'PASS' if result['passed'] else 'FAIL'}"
-            f"| expected={result['expected']}"
-            f"| actual={result['actual']} "
-            f" {result['message']}"
-        })
+        for result in results:
+            print({
+                f"{'PASS' if result['passed'] else 'FAIL'}"
+                f"| expected={result['expected']}"
+                f"| actual={result['actual']} "
+                f" {result['message']}"
+            })
 
-    accuracy = calculate_accuracy(results)
+        accuracy = calculate_accuracy(results)
 
-    print(f"Accuracy: {accuracy:.2%}")
+        print(f"Accuracy: {accuracy:.2%}")
 
-    evaluate_by_intent(results)
+        evaluate_by_intent(results)

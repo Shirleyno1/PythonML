@@ -20,6 +20,7 @@ dependencies = [
     "python-dotenv>=1.2.1",
     "sqlalchemy>=2.0.52",
     "uvicorn[standard]>=0.39.0",
+    "langsmith>=0.14.12",
 ]
 
 [dependency-groups]

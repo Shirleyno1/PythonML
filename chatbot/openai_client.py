@@ -1,5 +1,7 @@
 from openai import AsyncOpenAI
 
+from observability.tracing import ai_traceable, trace_model_output
+
 
 class OpenAIClient:
 
@@ -9,6 +11,12 @@ class OpenAIClient:
     ):
         self.client = AsyncOpenAI(api_key=api_key)
 
+    @ai_traceable(
+        name="AG-UI Model Response",
+        component="agui-model",
+        run_type="llm",
+        process_outputs=trace_model_output,
+    )
     async def create_response(
             self,
             message: str | list[dict[str, str]],
@@ -25,6 +33,12 @@ class OpenAIClient:
 
         return response
 
+    @ai_traceable(
+        name="AG-UI Model Response With Tool Result",
+        component="agui-model",
+        run_type="llm",
+        process_outputs=trace_model_output,
+    )
     async def create_response_with_tool_result(
             self,
             response_id: str,

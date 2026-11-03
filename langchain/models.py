@@ -1,18 +1,9 @@
-import os
-
-from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 
-
-load_dotenv()
-api_key = os.getenv("OPENAI_API_KEY")
+from settings.config import settings
 
 model = ChatOpenAI(
-    api_key=api_key,
+    api_key=settings.OPENAI_API_KEY,
     model="gpt-5-mini",
-    temperature=0
+    temperature=0,
 )
-
-response = model.invoke("")
-
-print(response.content)

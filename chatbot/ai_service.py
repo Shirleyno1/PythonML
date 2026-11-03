@@ -6,6 +6,11 @@ from openai import OpenAI
 
 from chatbot.models import AIResponse
 from chatbot.classifier import UserIntent
+from observability.tracing import (
+    ai_traceable,
+    trace_intent_output,
+    trace_message_input,
+)
 
 load_dotenv()
 
@@ -32,17 +37,20 @@ def generate_structured_response(
 
     return result
 
-def classify_message(
-        message: str,
-):
-
-    try:
-        response = _get_client().responses.parse(
-            model="gpt-5-mini",
-            input=[
-                {
-                    "role": "system",
-                    "content": """
+@ai_traceable(
+    name="AI Intent Classification",
+    component="intent-classification",
+    run_type="llm",
+    process_inputs=trace_message_input,
+    process_outputs=trace_intent_output,
+)
+def classify_message(message: str) -> UserIntent:
+    response = _get_client().responses.parse(
+        model="gpt-5-mini",
+        input=[
+            {
+                "role": "system",
+                "content": """
     You are an intent classifier for a personal post management application.
     
     Your job is to classify the user's message into exactly one of these intents:
@@ -74,16 +82,15 @@ def classify_message(
     
     In the intent is delete, extract the query, it will be post id that want to delete.
     """
-                },
-                {
-                    "role": "user",
-                    "content": message
-                }
-            ],
-            text_format=UserIntent
-        )
-
-        return response.output_parsed
-
-    except Exception as e:
-        print(f"LLM error: {e}")
+            },
+            {
+                "role": "user",
+                "content": message
+            }
+        ],
+        text_format=UserIntent
+    )
+    result = response.output_parsed
+    if result is None:
+        raise RuntimeError("The intent classifier returned no result.")
+    return result

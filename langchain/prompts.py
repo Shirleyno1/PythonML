@@ -1,6 +1,7 @@
 from langchain_core.prompts import ChatPromptTemplate
 
 from langchain.models import model
+from observability.tracing import langsmith_run_config
 
 prompt = ChatPromptTemplate.from_messages([
     (
@@ -13,11 +14,13 @@ prompt = ChatPromptTemplate.from_messages([
     )
 ])
 
-messages = prompt.invoke({
-    "domain": "AI",
-    "question": "What is RAG?"
-})
+chain = (prompt | model).with_config(langsmith_run_config("prompt"))
 
-response = model.invoke(messages)
 
-print(response.content)
+def main() -> None:
+    response = chain.invoke({"domain": "AI", "question": "What is RAG?"})
+    print(response.content)
+
+
+if __name__ == "__main__":
+    main()

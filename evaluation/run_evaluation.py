@@ -106,16 +106,37 @@ def evaluate_by_intent(results):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument(
+    evaluation_group = parser.add_mutually_exclusive_group()
+    evaluation_group.add_argument(
         "--langsmith",
         action="store_true",
-        help="Run the intent evaluation in LangSmith.",
+        help="Run intent-classifier evaluation in LangSmith.",
+    )
+    evaluation_group.add_argument(
+        "--agui",
+        action="store_true",
+        help="Evaluate AG-UI tool selection and answer presence in LangSmith.",
+    )
+    evaluation_group.add_argument(
+        "--rag",
+        action="store_true",
+        help="Evaluate LangChain RAG fact coverage and groundedness in LangSmith.",
     )
     args = parser.parse_args()
 
     if args.langsmith:
         run_langsmith_evaluation()
-        print("LangSmith evaluation completed.")
+        print("Intent-classifier LangSmith evaluation completed.")
+    elif args.agui:
+        from evaluation.agui_evaluation import run_agui_evaluation
+
+        run_agui_evaluation()
+        print("AG-UI LangSmith evaluation completed.")
+    elif args.rag:
+        from evaluation.rag_evaluation import run_rag_evaluation
+
+        run_rag_evaluation()
+        print("LangChain RAG LangSmith evaluation completed.")
     else:
         results = run_evaluation()
 

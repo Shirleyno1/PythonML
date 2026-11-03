@@ -1,5 +1,5 @@
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import Runnable, RunnablePassthrough
+from langchain_core.runnables import Runnable, RunnableLambda, RunnablePassthrough
 
 from langchain.models import model
 
@@ -21,14 +21,14 @@ rag_chain = rag_prompt | model
 def build_rag_chain(retriever: Runnable) -> Runnable:
     return (
             {
-                "context": retriever,
+                "context": retriever | RunnableLambda(format_documents),
                 "question": RunnablePassthrough(),
             }
             | rag_chain
     )
 
 
-def format_documents(documents):
+def format_documents(documents) -> str:
     return "\n\n".join(
         doc.page_content
         for doc in documents

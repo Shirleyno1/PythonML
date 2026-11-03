@@ -840,15 +840,23 @@ of its result. AG-UI traces include the user message, conversation history,
 model output/tool selection, and MCP tool results; internal user IDs are
 excluded. Treat traced prompts and results as user data.
 
-Run the intent-classifier evaluation against the local examples and publish the
-experiment to LangSmith with:
+Run LangSmith evaluations using the local intent and restaurant FAQ datasets:
 
 ```shell
+# Intent classification
 uv run python -m evaluation.run_evaluation --langsmith
+
+# AG-UI agent: tool selection and non-empty answer, with a read-only fake MCP
+uv run python -m evaluation.run_evaluation --agui
+
+# LangChain RAG: reference-fact coverage and groundedness
+uv run python -m evaluation.run_evaluation --rag
 ```
 
-AG-UI agent runs are available in the project for evaluation with LangSmith
-evaluators configured for that project.
+Evaluations require `LANGSMITH_API_KEY` and `OPENAI_API_KEY`. The AG-UI
+evaluation uses the real model/orchestrator but a synthetic, read-only MCP
+search tool; it never calls the live MCP server or performs delete operations.
+The RAG evaluation uses `data/Resturaunt Q&A.pdf`.
 
 ---
 

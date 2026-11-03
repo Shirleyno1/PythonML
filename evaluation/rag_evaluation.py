@@ -5,8 +5,6 @@ from typing import Any
 from uuid import uuid4
 
 from evaluation.rag_dataset import RAG_TEST_CASES
-from langchain.rag.chain import format_documents, rag_chain
-from langchain.rag.retrievers import RagRetriever
 from langsmith.evaluation import evaluate
 from langsmith.schemas import Example, Run
 
@@ -56,6 +54,9 @@ def _make_rag_predictor():
         raise RuntimeError("OPENAI_API_KEY is required for RAG evaluation.")
     if not RAG_DOCUMENT_PATH.is_file():
         raise FileNotFoundError(f"RAG evaluation document not found: {RAG_DOCUMENT_PATH}")
+
+    from langchain.rag.chain import format_documents, rag_chain
+    from langchain.rag.retrievers import RagRetriever
 
     retriever = RagRetriever(file_path=str(RAG_DOCUMENT_PATH)).get_retriever()
 

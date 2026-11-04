@@ -99,6 +99,8 @@ def test_rag_groundedness_does_not_score_facts_missing_from_context():
 
 
 def test_rag_predictor_retrieves_context_and_passes_it_to_generation(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
     retrieved_documents = [
         type("DocumentStub", (), {"page_content": "Open 11:00 AM to 10:00 PM."})()
     ]

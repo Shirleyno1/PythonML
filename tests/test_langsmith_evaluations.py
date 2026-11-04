@@ -1,4 +1,6 @@
 from datetime import datetime, timezone
+import sys
+from types import ModuleType
 from uuid import uuid4
 
 import pytest
@@ -11,6 +13,7 @@ from evaluation.agui_evaluation import (
 )
 from evaluation import agui_evaluation
 from evaluation.rag_evaluation import (
+    _make_rag_predictor,
     rag_groundedness,
     rag_reference_fact_coverage,
     run_rag_evaluation,
@@ -93,6 +96,58 @@ def test_rag_groundedness_does_not_score_facts_missing_from_context():
 
     assert rag_reference_fact_coverage(run, example)["score"] == 1.0
     assert rag_groundedness(run, example)["score"] == 0.5
+
+
+def test_rag_predictor_retrieves_context_and_passes_it_to_generation(monkeypatch):
+    retrieved_documents = [
+        type("DocumentStub", (), {"page_content": "Open 11:00 AM to 10:00 PM."})()
+    ]
+    seen = {}
+
+    class FakeRetriever:
+        def invoke(self, question):
+            seen["question"] = question
+            return retrieved_documents
+
+    def fake_generate(inputs):
+        seen["model_input"] = inputs
+        return type("ResponseStub", (), {"content": "Open 11:00 AM to 10:00 PM."})()
+
+    class FakeRagRetriever:
+        def __init__(self, file_path):
+            seen["file_path"] = file_path
+
+        def get_retriever(self):
+            return FakeRetriever()
+
+    chain_module = ModuleType("langchain.rag.chain")
+    chain_module.format_documents = lambda docs: "\n\n".join(
+        doc.page_content for doc in docs
+    )
+    chain_module.rag_chain = type(
+        "FakeRagChain",
+        (),
+        {"invoke": staticmethod(fake_generate)},
+    )()
+
+    retriever_module = ModuleType("langchain.rag.retrievers")
+    retriever_module.RagRetriever = FakeRagRetriever
+    monkeypatch.setitem(sys.modules, "langchain.rag.chain", chain_module)
+    monkeypatch.setitem(sys.modules, "langchain.rag.retrievers", retriever_module)
+
+    predictor = _make_rag_predictor()
+    output = predictor({"question": "When are you open?"})
+
+    assert seen["file_path"].endswith("Resturaunt Q&A.pdf")
+    assert seen["question"] == "When are you open?"
+    assert seen["model_input"] == {
+        "context": "Open 11:00 AM to 10:00 PM.",
+        "question": "When are you open?",
+    }
+    assert output == {
+        "answer": "Open 11:00 AM to 10:00 PM.",
+        "context": "Open 11:00 AM to 10:00 PM.",
+    }
 
 
 @pytest.mark.parametrize(

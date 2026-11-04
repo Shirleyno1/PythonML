@@ -132,12 +132,16 @@ ENGAGEMENT_OUTPUT_FIELDS = (
     "thumbs_up",
     "thumbs_down",
     "my_reaction",
+    "love_count",
+    "collect_count",
+    "loved",
+    "collected",
     "points",
     "points_awarded",
     "points_remaining",
     "total",
 )
-ENGAGEMENT_LIST_FIELDS = ("comments", "tasks", "history")
+ENGAGEMENT_LIST_FIELDS = ("posts", "comments", "tasks", "history")
 
 
 def trace_engagement_input(inputs: dict[str, Any]) -> dict[str, Any]:

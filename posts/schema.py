@@ -18,6 +18,11 @@ class ReactionType(str, Enum):
     DOWN = "down"
 
 
+class PostReactionType(str, Enum):
+    LOVE = "love"
+    COLLECT = "collect"
+
+
 class PointSource(str, Enum):
     ANSWER = "answer"
     TASK = "task"

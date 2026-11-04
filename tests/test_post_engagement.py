@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from langsmith import Client
 from langsmith.run_helpers import is_traceable_function, tracing_context
-from sqlalchemy import select
+from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -26,9 +26,10 @@ from posts.db import (
     PostReaction,
     User,
     get_async_session,
+    migrate_post_reactions,
 )
 from posts.repository import PostRepository
-from posts.schema import PointSource, PostType, ReactionType
+from posts.schema import PointSource, PostReactionType, PostType, ReactionType
 from posts.service import PostService
 from posts.users import current_active_user, current_superuser
 
@@ -181,7 +182,8 @@ def test_private_post_is_hidden_from_other_users(api):
     for method, url, body in (
         ("GET", f"/posts/{post_id}/comments", None),
         ("POST", f"/posts/{post_id}/comments", {"content": "hi"}),
-        ("PUT", f"/posts/{post_id}/reaction", {"reaction": "up"}),
+        ("PUT", f"/posts/{post_id}/reactions/love", None),
+        ("DELETE", f"/posts/{post_id}/reactions/collect", None),
         ("PATCH", f"/posts/{post_id}", {"commentsDisabled": True}),
         ("PUT", f"/comments/{comment_id}/reaction", {"reaction": "up"}),
         ("POST", f"/comments/{comment_id}/points", {"points": 1}),
@@ -189,30 +191,95 @@ def test_private_post_is_hidden_from_other_users(api):
         assert api.http.request(method, url, api.alice, json=body).status_code == 404, url
 
 
-def test_post_reactions_are_one_per_user_and_can_change(api):
+def test_love_and_collect_are_independent_and_can_be_removed(api):
     post_id = api.http.make_post(api.asker)
-    url = f"/posts/{post_id}/reaction"
+    love = f"/posts/{post_id}/reactions/love"
+    collect = f"/posts/{post_id}/reactions/collect"
 
-    first = api.http.request("PUT", url, api.alice, json={"reaction": "up"}).json()
-    assert first == {"thumbs_up": 1, "thumbs_down": 0, "my_reaction": "up"}
+    first = api.http.request("PUT", love, api.alice).json()
+    assert first == {"love_count": 1, "collect_count": 0, "loved": True, "collected": False}
 
-    repeated = api.http.request("PUT", url, api.alice, json={"reaction": "up"}).json()
-    assert repeated["thumbs_up"] == 1
+    repeated = api.http.request("PUT", love, api.alice).json()
+    assert repeated["love_count"] == 1
 
-    changed = api.http.request("PUT", url, api.alice, json={"reaction": "down"}).json()
-    assert changed == {"thumbs_up": 0, "thumbs_down": 1, "my_reaction": "down"}
+    both = api.http.request("PUT", collect, api.alice).json()
+    assert both == {"love_count": 1, "collect_count": 1, "loved": True, "collected": True}
 
-    other = api.http.request("PUT", url, api.bob, json={"reaction": "down"}).json()
-    assert other["thumbs_down"] == 2
+    other = api.http.request("PUT", love, api.bob).json()
+    assert other == {"love_count": 2, "collect_count": 1, "loved": True, "collected": False}
 
-    removed = api.http.request("DELETE", url, api.alice).json()
-    assert removed == {"thumbs_up": 0, "thumbs_down": 1, "my_reaction": None}
+    removed = api.http.request("DELETE", love, api.alice).json()
+    assert removed == {"love_count": 1, "collect_count": 1, "loved": False, "collected": True}
 
 
-def test_invalid_reaction_is_rejected(api):
+@pytest.mark.parametrize("reaction", ["up", "down", "meh"])
+def test_thumbs_and_unknown_reactions_are_rejected_on_posts(api, reaction):
     post_id = api.http.make_post(api.asker)
-    response = api.http.request("PUT", f"/posts/{post_id}/reaction", api.alice, json={"reaction": "meh"})
+    response = api.http.request("PUT", f"/posts/{post_id}/reactions/{reaction}", api.alice)
     assert response.status_code == 422
+
+
+def test_old_post_thumb_route_is_gone(api):
+    post_id = api.http.make_post(api.asker)
+    response = api.http.request("PUT", f"/posts/{post_id}/reaction", api.alice, json={"reaction": "up"})
+    assert response.status_code in (404, 405)
+
+
+def test_collected_posts_lists_only_what_the_user_collected(api):
+    collected = api.http.make_post(api.asker)
+    loved_only = api.http.make_post(api.asker)
+    uncollected = api.http.make_post(api.asker)
+    api.http.request("PUT", f"/posts/{collected}/reactions/collect", api.alice)
+    api.http.request("PUT", f"/posts/{loved_only}/reactions/love", api.alice)
+    api.http.request("PUT", f"/posts/{uncollected}/reactions/collect", api.alice)
+    api.http.request("DELETE", f"/posts/{uncollected}/reactions/collect", api.alice)
+
+    posts = api.http.request("GET", "/posts/collected", api.alice).json()["posts"]
+    assert [post["id"] for post in posts] == [collected]
+    assert posts[0]["collected"] is True
+    assert api.http.request("GET", "/posts/collected", api.bob).json()["posts"] == []
+
+
+def test_collected_posts_hide_posts_that_are_private_to_someone_else(api):
+    hidden = api.http.make_post(api.asker)
+    own_private = api.http.make_post(api.alice, is_private=True)
+    api.http.request("PUT", f"/posts/{hidden}/reactions/collect", api.alice)
+    api.http.request("PUT", f"/posts/{own_private}/reactions/collect", api.alice)
+
+    async def make_private():
+        async with api.http.session_maker() as session:
+            post = await session.get(Post, hidden)
+            post.is_private = True
+            await session.commit()
+
+    api.http.run(make_private())
+
+    posts = api.http.request("GET", "/posts/collected", api.alice).json()["posts"]
+    assert [post["id"] for post in posts] == [own_private]
+
+
+def test_old_thumb_table_is_replaced_and_new_table_is_left_alone(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'old.db'}")
+    with engine.begin() as connection:
+        connection.execute(text(
+            "CREATE TABLE post_reactions (post_id VARCHAR NOT NULL, user_id CHAR(36) NOT NULL, "
+            "reaction VARCHAR NOT NULL, PRIMARY KEY (post_id, user_id), "
+            "CHECK (reaction IN ('up', 'down')))"
+        ))
+        connection.execute(text("INSERT INTO post_reactions VALUES ('p', 'u', 'up')"))
+
+    insert_love = text("INSERT INTO post_reactions VALUES ('p', 'u', 'love')")
+    insert_collect = text("INSERT INTO post_reactions VALUES ('p', 'u', 'collect')")
+    with engine.begin() as connection:
+        migrate_post_reactions(connection)
+        assert "reaction" in inspect(connection).get_pk_constraint("post_reactions")["constrained_columns"]
+        connection.execute(insert_love)
+        connection.execute(insert_collect)
+
+    with engine.begin() as connection:
+        migrate_post_reactions(connection)
+        assert connection.execute(text("SELECT count(*) FROM post_reactions")).scalar_one() == 2
+    engine.dispose()
 
 
 def test_comment_reactions_appear_in_comment_list(api):
@@ -343,13 +410,16 @@ def test_post_listing_includes_engagement(api):
     share_id = api.http.make_post(api.asker, post_type=PostType.SHARE)
     comment_id = api.http.comment(question_id, api.alice)
     api.http.request("POST", f"/comments/{comment_id}/points", api.asker, json={"points": 2})
-    api.http.request("PUT", f"/posts/{question_id}/reaction", api.asker, json={"reaction": "up"})
+    api.http.request("PUT", f"/posts/{question_id}/reactions/love", api.asker)
 
     posts = {post["id"]: post for post in api.http.request("GET", "/posts/mine", api.asker).json()["posts"]}
     question = posts[question_id]
     assert question["comment_count"] == 1
-    assert question["thumbs_up"] == 1
-    assert question["my_reaction"] == "up"
+    assert question["love_count"] == 1
+    assert question["loved"] is True
+    assert question["collect_count"] == 0
+    assert question["collected"] is False
+    assert "thumbs_up" not in question
     assert question["points_awarded"] == 2
     assert question["points_remaining"] == 3
     assert question["commentsDisabled"] is False
@@ -360,7 +430,7 @@ def test_deleting_post_removes_engagement_but_keeps_earned_points(api):
     post_id = api.http.make_post(api.asker)
     comment_id = api.http.comment(post_id, api.alice)
     api.http.request("POST", f"/comments/{comment_id}/points", api.asker, json={"points": 5})
-    api.http.request("PUT", f"/posts/{post_id}/reaction", api.alice, json={"reaction": "up"})
+    api.http.request("PUT", f"/posts/{post_id}/reactions/collect", api.alice)
     api.http.request("PUT", f"/comments/{comment_id}/reaction", api.bob, json={"reaction": "up"})
 
     async def delete_and_inspect():
@@ -384,7 +454,9 @@ def test_deleting_post_removes_engagement_but_keeps_earned_points(api):
         "update_post",
         "add_comment",
         "get_comments",
-        "react_to_post",
+        "add_post_reaction",
+        "remove_post_reaction",
+        "get_collected_posts",
         "react_to_comment",
         "award_points",
         "get_my_points",
@@ -411,7 +483,8 @@ def test_engagement_trace_input_excludes_user_id_and_text():
 
 
 @pytest.mark.parametrize(
-    ("reaction", "expected"), [(ReactionType.UP, "up"), (None, None)]
+    ("reaction", "expected"),
+    [(ReactionType.UP, "up"), (PostReactionType.COLLECT, "collect"), (None, None)],
 )
 def test_engagement_trace_input_records_reaction(reaction, expected):
     assert trace_engagement_input({"reaction": reaction})["reaction"] == expected

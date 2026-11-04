@@ -106,13 +106,15 @@ class Comment(Base):
 
 
 class PostReaction(Base):
+    """A user's love or collect on a post. A user can do both on the same post."""
+
     __tablename__ = "post_reactions"
     __table_args__ = (
-        CheckConstraint("reaction IN ('up', 'down')", name="ck_post_reactions_reaction"),
+        CheckConstraint("reaction IN ('love', 'collect')", name="ck_post_reactions_reaction"),
     )
     post_id = Column(String, ForeignKey("posts.id", ondelete="CASCADE"), primary_key=True)
     user_id = Column(GUID, ForeignKey("user.id"), primary_key=True)
-    reaction = Column(String, nullable=False)
+    reaction = Column(String, primary_key=True)
 
 
 class CommentReaction(Base):
@@ -229,6 +231,23 @@ def migrate_legacy_posts(connection):
         )
 
 
+def migrate_post_reactions(connection):
+    """Replace thumbs on posts with love and collect.
+
+    Thumbs up/down have no equivalent in the new reactions, so old rows are dropped.
+    """
+    inspector = inspect(connection)
+    if "post_reactions" not in inspector.get_table_names():
+        return
+
+    primary_key = inspector.get_pk_constraint("post_reactions")["constrained_columns"]
+    if "reaction" in primary_key:
+        return
+
+    connection.execute(text("DROP TABLE post_reactions"))
+    PostReaction.__table__.create(connection)
+
+
 engine = create_async_engine(DATABASE_URL)
 async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -237,6 +256,7 @@ async def create_db_tables():
     async with engine.begin() as conn:
         await conn.run_sync(migrate_legacy_posts)
         await conn.run_sync(_ensure_post_metadata_columns)
+        await conn.run_sync(migrate_post_reactions)
         await conn.run_sync(Base.metadata.create_all)
 
 

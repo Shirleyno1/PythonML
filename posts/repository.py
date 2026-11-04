@@ -1,5 +1,5 @@
 from fastapi import HTTPException
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -13,7 +13,7 @@ from posts.db import (
     Task,
     User,
 )
-from posts.schema import PointSource, ReactionType
+from posts.schema import PointSource, PostReactionType, ReactionType
 
 
 class PostRepository:
@@ -171,6 +171,55 @@ class PostRepository:
         for target_id, reaction in mine.all():
             summaries[target_id]["my_reaction"] = reaction
         return summaries
+
+    async def add_post_reaction(self, post_id: str, user_id, reaction: str):
+        key = {"post_id": post_id, "user_id": user_id, "reaction": reaction}
+        if await self.session.get(PostReaction, key) is not None:
+            return
+        self.session.add(PostReaction(**key))
+        try:
+            await self.session.commit()
+        except IntegrityError:
+            # A concurrent request from this user inserted the row first.
+            await self.session.rollback()
+            if await self.session.get(PostReaction, key) is None:
+                raise
+
+    async def get_post_reaction_summaries(self, post_ids: list[str], user_id):
+        summaries = {
+            post_id: {"love_count": 0, "collect_count": 0, "loved": False, "collected": False}
+            for post_id in post_ids
+        }
+        counts = await self.session.execute(
+            select(PostReaction.post_id, PostReaction.reaction, func.count())
+            .where(PostReaction.post_id.in_(post_ids))
+            .group_by(PostReaction.post_id, PostReaction.reaction)
+        )
+        for post_id, reaction, count in counts.all():
+            summaries[post_id][f"{reaction}_count"] = count
+
+        mine = await self.session.execute(
+            select(PostReaction.post_id, PostReaction.reaction)
+            .where(PostReaction.post_id.in_(post_ids), PostReaction.user_id == user_id)
+        )
+        for post_id, reaction in mine.all():
+            field = "loved" if reaction == PostReactionType.LOVE.value else "collected"
+            summaries[post_id][field] = True
+        return summaries
+
+    async def get_collected_posts(self, user_id):
+        result = await self.session.execute(
+            select(Post)
+            .options(selectinload(Post.user), selectinload(Post.images))
+            .join(PostReaction, PostReaction.post_id == Post.id)
+            .where(
+                PostReaction.user_id == user_id,
+                PostReaction.reaction == PostReactionType.COLLECT.value,
+                or_(Post.is_private.is_(False), Post.user_id == user_id),
+            )
+            .order_by(Post.created_at.desc())
+        )
+        return result.scalars().all()
 
     async def get_points_awarded(self, key_column, ids: list[str]):
         result = await self.session.execute(

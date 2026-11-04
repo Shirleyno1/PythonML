@@ -17,6 +17,7 @@ from posts.images import imagekit
 from posts.schema import (
     CommentCreate,
     PointsAward,
+    PostReactionType,
     PostType,
     PostUpdate,
     ReactionUpdate,
@@ -158,6 +159,14 @@ async def get_my_posts(
     return await service.get_my_posts(user.id)
 
 
+@posts_router.get("/collected", summary="Posts you have collected")
+async def get_collected_posts(
+        service: Annotated[PostService, Depends(get_post_service)],
+        user: User = Depends(current_active_user),
+):
+    return await service.get_collected_posts(user.id)
+
+
 @posts_router.get(
     "/search",
     summary="Search public posts by type",
@@ -217,23 +226,24 @@ async def add_comment(
     return await service.add_comment(post_id, user.id, body.content)
 
 
-@posts_router.put("/{post_id}/reaction", summary="Thumb a post up or down")
-async def react_to_post(
+@posts_router.put("/{post_id}/reactions/{reaction}", summary="Love or collect a post")
+async def add_post_reaction(
         post_id: str,
-        body: ReactionUpdate,
+        reaction: PostReactionType,
         service: Annotated[PostService, Depends(get_post_service)],
         user: User = Depends(current_active_user),
 ):
-    return await service.react_to_post(post_id, user.id, body.reaction)
+    return await service.add_post_reaction(post_id, user.id, reaction)
 
 
-@posts_router.delete("/{post_id}/reaction", summary="Remove your thumb from a post")
+@posts_router.delete("/{post_id}/reactions/{reaction}", summary="Remove your love or collect")
 async def remove_post_reaction(
         post_id: str,
+        reaction: PostReactionType,
         service: Annotated[PostService, Depends(get_post_service)],
         user: User = Depends(current_active_user),
 ):
-    return await service.react_to_post(post_id, user.id, None)
+    return await service.remove_post_reaction(post_id, user.id, reaction)
 
 
 @comments_router.put("/{comment_id}/reaction", summary="Thumb a comment up or down")

@@ -5,7 +5,7 @@ from fastapi import HTTPException
 from observability.tracing import engagement_traceable
 from posts.db import Comment, CommentReaction, PointTransaction, Post, PostReaction
 from posts.repository import PostRepository
-from posts.schema import MAX_POINTS_PER_QUESTION, PostType, ReactionType
+from posts.schema import MAX_POINTS_PER_QUESTION, PostReactionType, PostType, ReactionType
 
 
 class PostService:
@@ -37,9 +37,7 @@ class PostService:
 
     async def _serialize_posts(self, posts: list[Post], user_id: uuid.UUID):
         post_ids = [post.id for post in posts]
-        reactions = await self.repository.get_reaction_summaries(
-            PostReaction, PostReaction.post_id, post_ids, user_id
-        )
+        reactions = await self.repository.get_post_reaction_summaries(post_ids, user_id)
         comment_counts = await self.repository.get_comment_counts(post_ids)
         points_awarded = await self.repository.get_points_awarded(
             PointTransaction.post_id, post_ids
@@ -154,12 +152,24 @@ class PostService:
             for comment in comments
         ]
 
-    @engagement_traceable("React To Post")
-    async def react_to_post(self, post_id: str, user_id: uuid.UUID, reaction: ReactionType | None):
+    @engagement_traceable("Add Post Reaction")
+    async def add_post_reaction(self, post_id: str, user_id: uuid.UUID, reaction: PostReactionType):
         post = await self._get_visible_post(post_id, user_id)
-        return await self._apply_reaction(
-            PostReaction, PostReaction.post_id, {"post_id": post.id, "user_id": user_id}, reaction
+        await self.repository.add_post_reaction(post.id, user_id, reaction.value)
+        return (await self.repository.get_post_reaction_summaries([post.id], user_id))[post.id]
+
+    @engagement_traceable("Remove Post Reaction")
+    async def remove_post_reaction(self, post_id: str, user_id: uuid.UUID, reaction: PostReactionType):
+        post = await self._get_visible_post(post_id, user_id)
+        await self.repository.clear_reaction(
+            PostReaction, {"post_id": post.id, "user_id": user_id, "reaction": reaction.value}
         )
+        return (await self.repository.get_post_reaction_summaries([post.id], user_id))[post.id]
+
+    @engagement_traceable("Get Collected Posts")
+    async def get_collected_posts(self, user_id: uuid.UUID):
+        rows = await self.repository.get_collected_posts(user_id)
+        return {"posts": await self._serialize_posts(rows, user_id)}
 
     @engagement_traceable("React To Comment")
     async def react_to_comment(self, comment_id: str, user_id: uuid.UUID, reaction: ReactionType | None):

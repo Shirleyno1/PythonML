@@ -114,3 +114,70 @@ def trace_tool_input(inputs: dict[str, Any]) -> dict[str, Any]:
         "tool_name": inputs.get("name"),
         "arguments": arguments,
     }
+
+
+ENGAGEMENT_INPUT_FIELDS = (
+    "post_id",
+    "comment_id",
+    "task_id",
+    "comments_disabled",
+    "points",
+)
+ENGAGEMENT_OUTPUT_FIELDS = (
+    "id",
+    "post_id",
+    "comment_id",
+    "task_id",
+    "commentsDisabled",
+    "thumbs_up",
+    "thumbs_down",
+    "my_reaction",
+    "points",
+    "points_awarded",
+    "points_remaining",
+    "total",
+)
+ENGAGEMENT_LIST_FIELDS = ("comments", "tasks", "history")
+
+
+def trace_engagement_input(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Allowlist IDs and settings: user IDs and user-written text stay out of traces."""
+    summary = {
+        key: inputs[key]
+        for key in ENGAGEMENT_INPUT_FIELDS
+        if key in inputs
+    }
+    if "reaction" in inputs:
+        reaction = inputs["reaction"]
+        summary["reaction"] = getattr(reaction, "value", reaction)
+    if isinstance(inputs.get("content"), str):
+        summary["content_length"] = len(inputs["content"])
+    return summary
+
+
+def trace_engagement_output(output: Any) -> dict[str, Any]:
+    if not isinstance(output, dict):
+        return {"result_type": type(output).__name__}
+
+    summary = {
+        key: output[key]
+        for key in ENGAGEMENT_OUTPUT_FIELDS
+        if key in output
+    }
+    for key in ENGAGEMENT_LIST_FIELDS:
+        if isinstance(output.get(key), list):
+            summary[f"{key}_count"] = len(output[key])
+    return summary
+
+
+def engagement_traceable(name: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    return traceable(
+        name=name,
+        run_type="chain",
+        project_name=settings.LANGSMITH_PROJECT,
+        tags=["pythonml", "posts", "post-engagement"],
+        metadata={"component": "post-engagement"},
+        enabled=settings.LANGSMITH_TRACING,
+        process_inputs=trace_engagement_input,
+        process_outputs=trace_engagement_output,
+    )

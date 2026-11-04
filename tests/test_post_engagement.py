@@ -2,15 +2,20 @@ import asyncio
 import io
 import uuid
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from langsmith import Client
+from langsmith.run_helpers import is_traceable_function, tracing_context
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 import posts.app as posts_app
+from observability import tracing
+from observability.tracing import trace_engagement_input, trace_engagement_output
 from posts.app import comments_router, points_router, posts_router, tasks_router
 from posts.db import (
     Base,
@@ -23,7 +28,8 @@ from posts.db import (
     get_async_session,
 )
 from posts.repository import PostRepository
-from posts.schema import PointSource, PostType
+from posts.schema import PointSource, PostType, ReactionType
+from posts.service import PostService
 from posts.users import current_active_user, current_superuser
 
 
@@ -370,3 +376,88 @@ def test_deleting_post_removes_engagement_but_keeps_earned_points(api):
     assert counts == {"Comment": 0, "PostReaction": 0, "CommentReaction": 0}
     assert (ledger_post, ledger_comment) == (None, None)
     assert api.http.total_points(api.alice) == 5
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "update_post",
+        "add_comment",
+        "get_comments",
+        "react_to_post",
+        "react_to_comment",
+        "award_points",
+        "get_my_points",
+        "create_task",
+        "get_tasks",
+        "complete_task",
+    ],
+)
+def test_engagement_service_methods_are_traced(method):
+    assert is_traceable_function(getattr(PostService, method))
+
+
+def test_engagement_trace_input_excludes_user_id_and_text():
+    assert trace_engagement_input(
+        {
+            "self": object(),
+            "post_id": "post-1",
+            "user_id": "private-user-id",
+            "content": "private comment",
+            "title": "private title",
+            "description": "private description",
+        }
+    ) == {"post_id": "post-1", "content_length": 15}
+
+
+@pytest.mark.parametrize(
+    ("reaction", "expected"), [(ReactionType.UP, "up"), (None, None)]
+)
+def test_engagement_trace_input_records_reaction(reaction, expected):
+    assert trace_engagement_input({"reaction": reaction})["reaction"] == expected
+
+
+def test_engagement_trace_output_excludes_private_comment_fields():
+    assert trace_engagement_output(
+        {
+            "id": "comment-1",
+            "post_id": "post-1",
+            "user_id": "private-user-id",
+            "email": "private@example.com",
+            "content": "private comment",
+            "thumbs_up": 2,
+        }
+    ) == {"id": "comment-1", "post_id": "post-1", "thumbs_up": 2}
+
+
+def test_engagement_trace_output_counts_lists_instead_of_copying_them():
+    assert trace_engagement_output(
+        {"total": 8, "history": [{"points": 5}, {"points": 3}]}
+    ) == {"total": 8, "history_count": 2}
+
+
+def test_traced_call_sends_only_filtered_data_and_records_failures(monkeypatch):
+    monkeypatch.setattr(tracing.settings, "LANGSMITH_TRACING", True)
+
+    @tracing.engagement_traceable("Add Comment")
+    async def add_comment(post_id, user_id, content):
+        if content == "fail":
+            raise ValueError("rejected")
+        return {"id": "comment-1", "email": "private@example.com", "content": content}
+
+    client = Mock(spec=Client, tracing_sampling_rate=1.0)
+
+    async def call():
+        with tracing_context(client=client):
+            await add_comment("post-1", "private-user-id", "private comment")
+            with pytest.raises(ValueError):
+                await add_comment("post-1", "private-user-id", "fail")
+
+    asyncio.run(call())
+
+    assert client.create_run.call_count == 2
+    sent = repr(client.create_run.call_args_list) + repr(client.update_run.call_args_list)
+    assert "post-1" in sent
+    assert "rejected" in sent
+    for private in ("private-user-id", "private comment", "private@example.com"):
+        assert private not in sent

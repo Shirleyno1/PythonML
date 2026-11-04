@@ -2,6 +2,7 @@ import uuid
 
 from fastapi import HTTPException
 
+from observability.tracing import engagement_traceable
 from posts.db import Comment, CommentReaction, PointTransaction, Post, PostReaction
 from posts.repository import PostRepository
 from posts.schema import MAX_POINTS_PER_QUESTION, PostType, ReactionType
@@ -108,6 +109,7 @@ class PostService:
             raise HTTPException(status_code=404, detail=f"Comment {comment_id} not found")
         return comment
 
+    @engagement_traceable("Update Post Comment Setting")
     async def update_post(self, post_id: str, user_id: uuid.UUID, comments_disabled: bool):
         post = await self._get_visible_post(post_id, user_id)
         if post.user_id != user_id:
@@ -115,6 +117,7 @@ class PostService:
         await self.repository.set_comments_disabled(post, comments_disabled)
         return {"id": post.id, "commentsDisabled": post.comments_disabled}
 
+    @engagement_traceable("Add Comment")
     async def add_comment(self, post_id: str, user_id: uuid.UUID, content: str):
         post = await self._get_visible_post(post_id, user_id)
         if post.comments_disabled:
@@ -122,6 +125,7 @@ class PostService:
         comment = await self.repository.add_comment(post.id, user_id, content)
         return (await self._serialize_comments([comment], user_id))[0]
 
+    @engagement_traceable("Get Comments")
     async def get_comments(self, post_id: str, user_id: uuid.UUID):
         post = await self._get_visible_post(post_id, user_id)
         comments = await self.repository.get_comments(post.id)
@@ -150,12 +154,14 @@ class PostService:
             for comment in comments
         ]
 
+    @engagement_traceable("React To Post")
     async def react_to_post(self, post_id: str, user_id: uuid.UUID, reaction: ReactionType | None):
         post = await self._get_visible_post(post_id, user_id)
         return await self._apply_reaction(
             PostReaction, PostReaction.post_id, {"post_id": post.id, "user_id": user_id}, reaction
         )
 
+    @engagement_traceable("React To Comment")
     async def react_to_comment(self, comment_id: str, user_id: uuid.UUID, reaction: ReactionType | None):
         comment = await self._get_visible_comment(comment_id, user_id)
         return await self._apply_reaction(
@@ -176,6 +182,7 @@ class PostService:
         )
         return summaries[target_id]
 
+    @engagement_traceable("Award Points")
     async def award_points(self, comment_id: str, user_id: uuid.UUID, points: int):
         comment = await self._get_visible_comment(comment_id, user_id)
         # The row lock makes concurrent awards on one post take turns, so they
@@ -207,6 +214,7 @@ class PostService:
             "points_remaining": remaining - points,
         }
 
+    @engagement_traceable("Get My Points")
     async def get_my_points(self, user_id: uuid.UUID):
         history = await self.repository.get_point_history(user_id)
         return {
@@ -225,15 +233,18 @@ class PostService:
             ],
         }
 
+    @engagement_traceable("Create Task")
     async def create_task(self, title: str, description: str, points: int):
         task = await self.repository.add_task(title, description, points)
         return self._serialize_task(task, completed=False)
 
+    @engagement_traceable("Get Tasks")
     async def get_tasks(self, user_id: uuid.UUID):
         tasks = await self.repository.get_tasks()
         completed = await self.repository.get_completed_task_ids(user_id)
         return {"tasks": [self._serialize_task(task, task.id in completed) for task in tasks]}
 
+    @engagement_traceable("Complete Task")
     async def complete_task(self, task_id: str, user_id: uuid.UUID):
         task = await self.repository.get_task(task_id)
         if task is None:

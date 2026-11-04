@@ -6,7 +6,7 @@ from typing import Annotated
 
 from posts.dependencies import get_post_service
 from posts.service import PostService
-from posts.users import current_active_user
+from posts.users import current_active_user, current_superuser
 from fastapi import HTTPException, UploadFile, File, Form, Depends, APIRouter, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,10 +14,20 @@ from sqlalchemy.orm import selectinload
 
 from posts.db import get_async_session, Post, PostImage, User
 from posts.images import imagekit
-from posts.schema import PostType
+from posts.schema import (
+    CommentCreate,
+    PointsAward,
+    PostType,
+    PostUpdate,
+    ReactionUpdate,
+    TaskCreate,
+)
 
 
 posts_router = APIRouter(prefix="/posts", tags=["posts"])
+comments_router = APIRouter(prefix="/comments", tags=["comments"])
+points_router = APIRouter(prefix="/points", tags=["points"])
+tasks_router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 @posts_router.post(
     "/upload",
@@ -47,6 +57,11 @@ async def upload_file(
             alias="isPrivate",
             description="If true, only you can see this post.",
         ),
+        comments_disabled: bool = Form(
+            False,
+            alias="commentsDisabled",
+            description="If true, nobody can comment on this post.",
+        ),
         user: User = Depends(current_active_user),
         session: AsyncSession = Depends(get_async_session),
 ):
@@ -60,6 +75,7 @@ async def upload_file(
             description=description,
             post_type=post_type.value,
             is_private=is_private,
+            comments_disabled=comments_disabled,
             user_id=user.id,
         )
         session.add(post)
@@ -110,6 +126,7 @@ async def upload_file(
             "description": post.description,
             "type": post.post_type,
             "isPrivate": post.is_private,
+            "commentsDisabled": post.comments_disabled,
             "created_at": post.created_at,
             "images": [
                 {
@@ -169,3 +186,118 @@ async def delete_post(
 
 
     return {"message": "Post deleted successfully"}
+
+
+@posts_router.patch("/{post_id}", summary="Enable or disable comments on your post")
+async def update_post(
+        post_id: str,
+        body: PostUpdate,
+        service: Annotated[PostService, Depends(get_post_service)],
+        user: User = Depends(current_active_user),
+):
+    return await service.update_post(post_id, user.id, body.commentsDisabled)
+
+
+@posts_router.get("/{post_id}/comments")
+async def get_comments(
+        post_id: str,
+        service: Annotated[PostService, Depends(get_post_service)],
+        user: User = Depends(current_active_user),
+):
+    return await service.get_comments(post_id, user.id)
+
+
+@posts_router.post("/{post_id}/comments", status_code=201)
+async def add_comment(
+        post_id: str,
+        body: CommentCreate,
+        service: Annotated[PostService, Depends(get_post_service)],
+        user: User = Depends(current_active_user),
+):
+    return await service.add_comment(post_id, user.id, body.content)
+
+
+@posts_router.put("/{post_id}/reaction", summary="Thumb a post up or down")
+async def react_to_post(
+        post_id: str,
+        body: ReactionUpdate,
+        service: Annotated[PostService, Depends(get_post_service)],
+        user: User = Depends(current_active_user),
+):
+    return await service.react_to_post(post_id, user.id, body.reaction)
+
+
+@posts_router.delete("/{post_id}/reaction", summary="Remove your thumb from a post")
+async def remove_post_reaction(
+        post_id: str,
+        service: Annotated[PostService, Depends(get_post_service)],
+        user: User = Depends(current_active_user),
+):
+    return await service.react_to_post(post_id, user.id, None)
+
+
+@comments_router.put("/{comment_id}/reaction", summary="Thumb a comment up or down")
+async def react_to_comment(
+        comment_id: str,
+        body: ReactionUpdate,
+        service: Annotated[PostService, Depends(get_post_service)],
+        user: User = Depends(current_active_user),
+):
+    return await service.react_to_comment(comment_id, user.id, body.reaction)
+
+
+@comments_router.delete("/{comment_id}/reaction", summary="Remove your thumb from a comment")
+async def remove_comment_reaction(
+        comment_id: str,
+        service: Annotated[PostService, Depends(get_post_service)],
+        user: User = Depends(current_active_user),
+):
+    return await service.react_to_comment(comment_id, user.id, None)
+
+
+@comments_router.post(
+    "/{comment_id}/points",
+    summary="Give points to a comment on your question",
+    description="Only the question owner can give points, up to 5 in total per question.",
+)
+async def award_points(
+        comment_id: str,
+        body: PointsAward,
+        service: Annotated[PostService, Depends(get_post_service)],
+        user: User = Depends(current_active_user),
+):
+    return await service.award_points(comment_id, user.id, body.points)
+
+
+@points_router.get("/me", summary="Your point total and how you earned it")
+async def get_my_points(
+        service: Annotated[PostService, Depends(get_post_service)],
+        user: User = Depends(current_active_user),
+):
+    return await service.get_my_points(user.id)
+
+
+@tasks_router.get("")
+async def get_tasks(
+        service: Annotated[PostService, Depends(get_post_service)],
+        user: User = Depends(current_active_user),
+):
+    return await service.get_tasks(user.id)
+
+
+@tasks_router.post("", status_code=201, summary="Create a task (superusers only)")
+async def create_task(
+        body: TaskCreate,
+        service: Annotated[PostService, Depends(get_post_service)],
+        user: User = Depends(current_superuser),
+):
+    return await service.create_task(body.title, body.description, body.points)
+
+
+@tasks_router.post("/{task_id}/complete", summary="Complete a task and earn its points")
+async def complete_task(
+        task_id: str,
+        service: Annotated[PostService, Depends(get_post_service)],
+        user: User = Depends(current_active_user),
+):
+    return await service.complete_task(task_id, user.id)

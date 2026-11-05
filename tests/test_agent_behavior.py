@@ -2,6 +2,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+from chatbot.agui.service import _format_tool_event
 from chatbot.orchestrator import AgentOrchestrator
 from mcp_server.schema_adapter import SchemaAdapter
 
@@ -121,3 +122,102 @@ def test_agent_runs_search_with_trusted_user_id_and_returns_final_answer():
             "tools": model.initial_calls[0]["tools"],
         }
     ]
+
+
+def _delete_agent(post_lookup, arguments=None):
+    mcp = FakeMCPClient()
+    model = FakeOpenAIClient(
+        first_response=SimpleNamespace(
+            id="response-1",
+            output=[_function_call("delete_post", arguments or {"post_id": "post-1"})],
+        ),
+        final_response=SimpleNamespace(
+            id="response-2",
+            output=[],
+            output_text="Please check the confirmation prompt.",
+        ),
+    )
+    return AgentOrchestrator(model, mcp, SchemaAdapter(), post_lookup=post_lookup), mcp, model
+
+
+def _run_delete(agent, *, with_events=True):
+    events = []
+
+    async def record(event):
+        events.append(event)
+
+    answer = asyncio.run(
+        agent.run_agent(
+            "Delete my post",
+            user_id="authenticated-user",
+            on_tool_event=record if with_events else None,
+        )
+    )
+    return answer, events
+
+
+def test_agent_delete_asks_for_confirmation_without_deleting():
+    lookups = []
+
+    async def lookup(post_id, user_id):
+        lookups.append((post_id, user_id))
+        return {"id": post_id, "title": "My fern"}
+
+    agent, mcp, model = _delete_agent(
+        lookup, {"post_id": "post-1", "user_id": "forged-user"}
+    )
+
+    answer, events = _run_delete(agent)
+
+    assert answer == "Please check the confirmation prompt."
+    assert mcp.calls == []
+    assert lookups == [("post-1", "authenticated-user")]
+    assert {
+        "type": "delete_confirmation",
+        "tool_call_id": "call-1",
+        "post_id": "post-1",
+        "title": "My fern",
+    } in events
+    assert "NOT been deleted" in model.followup_calls[0]["tool_result"]
+
+
+def test_agent_delete_of_a_post_the_user_does_not_own_shows_no_prompt():
+    async def lookup(post_id, user_id):
+        return None
+
+    agent, mcp, model = _delete_agent(lookup)
+
+    _, events = _run_delete(agent)
+
+    assert mcp.calls == []
+    assert "delete_confirmation" not in {event["type"] for event in events}
+    assert "Nothing was deleted" in model.followup_calls[0]["tool_result"]
+
+
+def test_agent_delete_without_an_event_stream_does_not_claim_a_prompt_was_shown():
+    async def lookup(post_id, user_id):
+        return {"id": post_id, "title": "My fern"}
+
+    agent, mcp, model = _delete_agent(lookup)
+
+    _run_delete(agent, with_events=False)
+
+    assert mcp.calls == []
+    assert "posts screen" in model.followup_calls[0]["tool_result"]
+
+
+def test_delete_confirmation_is_streamed_as_a_custom_event():
+    sse = _format_tool_event(
+        {
+            "type": "delete_confirmation",
+            "tool_call_id": "call-1",
+            "post_id": "post-1",
+            "title": "My fern",
+        }
+    )
+
+    assert json.loads(sse.removeprefix("data: ")) == {
+        "type": "CUSTOM",
+        "name": "delete_post_confirmation",
+        "value": {"postId": "post-1", "title": "My fern"},
+    }

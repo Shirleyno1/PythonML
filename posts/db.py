@@ -7,8 +7,22 @@ from fastapi_users_db_sqlalchemy import (
     SQLAlchemyBaseUserTableUUID,
     SQLAlchemyUserDatabase,
 )
+from fastapi_users_db_sqlalchemy.generics import GUID
 from fastapi import Depends
-from sqlalchemy import Boolean, Column, Integer, String, Text, DateTime, ForeignKey, inspect, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    JSON,
+    String,
+    Text,
+    UniqueConstraint,
+    inspect,
+    text,
+)
 from sqlalchemy.dialects.postgresql.base import UUID
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import DeclarativeBase, relationship
@@ -51,6 +65,12 @@ class Post(Base):
         default=False,
         server_default=text("false"),
     )
+    comments_disabled = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="posts")
@@ -72,6 +92,88 @@ class PostImage(Base):
     position = Column(Integer, nullable=False, default=0)
 
     post = relationship("Post", back_populates="images")
+
+
+class Comment(Base):
+    __tablename__ = "comments"
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    post_id = Column(String, ForeignKey("posts.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(GUID, ForeignKey("user.id"), nullable=False)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User")
+    post = relationship("Post")
+
+
+class PostReaction(Base):
+    """A user's love or collect on a post. A user can do both on the same post."""
+
+    __tablename__ = "post_reactions"
+    __table_args__ = (
+        CheckConstraint("reaction IN ('love', 'collect')", name="ck_post_reactions_reaction"),
+    )
+    post_id = Column(String, ForeignKey("posts.id", ondelete="CASCADE"), primary_key=True)
+    user_id = Column(GUID, ForeignKey("user.id"), primary_key=True)
+    reaction = Column(String, primary_key=True)
+
+
+class CommentReaction(Base):
+    __tablename__ = "comment_reactions"
+    __table_args__ = (
+        CheckConstraint("reaction IN ('up', 'down')", name="ck_comment_reactions_reaction"),
+    )
+    comment_id = Column(String, ForeignKey("comments.id", ondelete="CASCADE"), primary_key=True)
+    user_id = Column(GUID, ForeignKey("user.id"), primary_key=True)
+    reaction = Column(String, nullable=False)
+
+
+class Task(Base):
+    __tablename__ = "tasks"
+    __table_args__ = (CheckConstraint("points > 0", name="ck_tasks_points_positive"),)
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=False, default="")
+    points = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PointTransaction(Base):
+    """Ledger of points earned. A user's balance is the sum of their rows.
+
+    Earned points outlive the post or comment that produced them, so those
+    references are cleared on delete rather than cascading. The unique
+    constraint lets each user complete a task once; NULL task_ids don't collide.
+    """
+
+    __tablename__ = "point_transactions"
+    __table_args__ = (
+        CheckConstraint("points > 0", name="ck_point_transactions_points_positive"),
+        UniqueConstraint("user_id", "task_id", name="uq_point_transactions_user_task"),
+    )
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(GUID, ForeignKey("user.id"), nullable=False, index=True)
+    points = Column(Integer, nullable=False)
+    source = Column(String, nullable=False)
+    post_id = Column(String, ForeignKey("posts.id", ondelete="SET NULL"), index=True)
+    comment_id = Column(String, ForeignKey("comments.id", ondelete="SET NULL"), index=True)
+    task_id = Column(String, ForeignKey("tasks.id", ondelete="SET NULL"))
+    awarded_by = Column(GUID, ForeignKey("user.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class IdempotencyRecord(Base):
+    """A write a user has made under an Idempotency-Key, and its response for replay."""
+
+    __tablename__ = "idempotency_records"
+    user_id = Column(GUID, ForeignKey("user.id", ondelete="CASCADE"), primary_key=True)
+    key = Column(String(255), primary_key=True)
+    fingerprint = Column(String, nullable=False)
+    status = Column(String, nullable=False)
+    response_status = Column(Integer)
+    response_body = Column(JSON)
+    locked_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, nullable=False, index=True)
 
 
 def _as_uuid(value):
@@ -144,6 +246,23 @@ def migrate_legacy_posts(connection):
         )
 
 
+def migrate_post_reactions(connection):
+    """Replace thumbs on posts with love and collect.
+
+    Thumbs up/down have no equivalent in the new reactions, so old rows are dropped.
+    """
+    inspector = inspect(connection)
+    if "post_reactions" not in inspector.get_table_names():
+        return
+
+    primary_key = inspector.get_pk_constraint("post_reactions")["constrained_columns"]
+    if "reaction" in primary_key:
+        return
+
+    connection.execute(text("DROP TABLE post_reactions"))
+    PostReaction.__table__.create(connection)
+
+
 engine = create_async_engine(DATABASE_URL)
 async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
 
@@ -152,6 +271,7 @@ async def create_db_tables():
     async with engine.begin() as conn:
         await conn.run_sync(migrate_legacy_posts)
         await conn.run_sync(_ensure_post_metadata_columns)
+        await conn.run_sync(migrate_post_reactions)
         await conn.run_sync(Base.metadata.create_all)
 
 
@@ -170,6 +290,10 @@ def _ensure_post_metadata_columns(connection):
     if "isPrivate" not in columns:
         connection.execute(
             text("ALTER TABLE posts ADD COLUMN isPrivate BOOLEAN NOT NULL DEFAULT FALSE")
+        )
+    if "comments_disabled" not in columns:
+        connection.execute(
+            text("ALTER TABLE posts ADD COLUMN comments_disabled BOOLEAN NOT NULL DEFAULT FALSE")
         )
 
 

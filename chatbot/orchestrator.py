@@ -2,7 +2,35 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from observability.tracing import ai_traceable, trace_agent_input, trace_tool_input
+from observability.tracing import (
+    ai_traceable,
+    trace_agent_input,
+    trace_delete_confirmation_input,
+    trace_tool_input,
+)
+from posts.db import async_session_maker
+from posts.repository import PostRepository
+from posts.service import PostService
+
+DELETE_POST_TOOL = "delete_post"
+DELETE_NOT_FOUND_RESULT = (
+    "Nothing was deleted: this post doesn't exist or doesn't belong to the user."
+)
+DELETE_CONFIRMATION_SHOWN_RESULT = (
+    "The post has NOT been deleted. The app is showing the user a confirmation prompt, "
+    "and the post is deleted only if they accept it. Tell them to check the prompt, and "
+    "don't say the post was deleted."
+)
+DELETE_CONFIRMATION_UNAVAILABLE_RESULT = (
+    "The post has NOT been deleted. Deleting needs a confirmation this chat can't show, "
+    "so tell the user to delete the post from their posts screen."
+)
+
+
+async def find_own_post(post_id: str, user_id: str) -> dict[str, str] | None:
+    async with async_session_maker() as session:
+        service = PostService(PostRepository(session))
+        return await service.get_own_post_summary(post_id, user_id)
 
 
 class AgentOrchestrator:
@@ -12,10 +40,12 @@ class AgentOrchestrator:
             openai_client,
             mcp_client,
             schema_adapter,
+            post_lookup: Callable[[str, str], Awaitable[dict[str, str] | None]] = find_own_post,
     ):
         self.openai_client = openai_client
         self.mcp_client = mcp_client
         self.schema_adapter = schema_adapter
+        self.post_lookup = post_lookup
 
     @ai_traceable(
         name="AG-UI Agent Run",
@@ -108,16 +138,29 @@ class AgentOrchestrator:
                     if tool_call["name"] in {"search_posts", "delete_post"}:
                         arguments["user_id"] = user_id
 
-                    # 6. Call MCP dynamically
+                    if tool_call["name"] == DELETE_POST_TOOL:
 
-                    result = await self._call_tool(
-                        name=tool_call["name"],
-                        arguments=arguments,
-                    )
+                        # The model can only ask for a delete. The post is deleted
+                        # when the user accepts the prompt and the app calls the API.
 
-                    # 7. Convert MCP result into something OpenAI can read
+                        tool_result = await self._request_delete_confirmation(
+                            arguments=arguments,
+                            user_id=user_id,
+                            tool_call_id=tool_call["call_id"],
+                            on_tool_event=on_tool_event,
+                        )
+                    else:
 
-                    tool_result = self._serialize_result(result)
+                        # 6. Call MCP dynamically
+
+                        result = await self._call_tool(
+                            name=tool_call["name"],
+                            arguments=arguments,
+                        )
+
+                        # 7. Convert MCP result into something OpenAI can read
+
+                        tool_result = self._serialize_result(result)
                     await self._emit_tool_event(
                         on_tool_event,
                         {
@@ -146,6 +189,35 @@ class AgentOrchestrator:
     )
     async def _call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         return await self.mcp_client.call_tool(name=name, arguments=arguments)
+
+    @ai_traceable(
+        name="AG-UI Delete Confirmation",
+        component="agui-tool",
+        run_type="tool",
+        process_inputs=trace_delete_confirmation_input,
+    )
+    async def _request_delete_confirmation(
+        self,
+        arguments: dict[str, Any],
+        user_id: str,
+        tool_call_id: str,
+        on_tool_event: Callable[[dict[str, str]], Awaitable[None]] | None,
+    ) -> str:
+        post = await self.post_lookup(str(arguments.get("post_id")), user_id)
+        if post is None:
+            return DELETE_NOT_FOUND_RESULT
+        if on_tool_event is None:
+            return DELETE_CONFIRMATION_UNAVAILABLE_RESULT
+
+        await on_tool_event(
+            {
+                "type": "delete_confirmation",
+                "tool_call_id": tool_call_id,
+                "post_id": post["id"],
+                "title": post["title"],
+            }
+        )
+        return DELETE_CONFIRMATION_SHOWN_RESULT
 
     @staticmethod
     async def _emit_tool_event(

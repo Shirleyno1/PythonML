@@ -21,7 +21,7 @@ class SchemaAdapter:
                 "description": (
                     {
                         "search_posts": "Search public posts from all users, optionally filtered by post type.",
-                        "delete_post": "Delete a post owned by the authenticated user.",
+                        "delete_post": "Ask the authenticated user to confirm deleting one of their own posts. The post is deleted only if they accept.",
                     }.get(tool.name, tool.description)
                 ),
                 "parameters": parameters,

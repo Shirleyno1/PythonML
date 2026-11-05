@@ -142,6 +142,20 @@ class StepFinishedEvent:
             "stepName": self.step_name,
         })
 
+# ----- Custom -----
+
+@dataclass
+class CustomEvent:
+    name: str
+    value: dict
+
+    def to_sse(self) -> str:
+        return to_sse({
+            "type": "CUSTOM",
+            "name": self.name,
+            "value": self.value,
+        })
+
 # ----- Error -----
 
 @dataclass

@@ -10,7 +10,7 @@ from chatbot.routes import agui, ai, chat, mcp, rag
 from common.logging_config import setup_logging
 from mcp_server.client import MCPClient
 from mcp_server.schema_adapter import SchemaAdapter
-from posts.app import posts_router
+from posts.app import comments_router, points_router, posts_router, tasks_router
 from posts.db import create_db_tables
 from posts.schema import UserCreate, UserRead, UserUpdate
 from posts.users import auth_backend, fastapi_users
@@ -72,6 +72,9 @@ def create_app() -> FastAPI:
     configure_agent()
     application = FastAPI(lifespan=lifespan)
     application.include_router(posts_router)
+    application.include_router(comments_router)
+    application.include_router(points_router)
+    application.include_router(tasks_router)
     application.include_router(chat.router)
     application.include_router(ai.router)
     application.include_router(mcp.router)

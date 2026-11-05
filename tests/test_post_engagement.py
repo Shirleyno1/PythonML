@@ -1,9 +1,11 @@
 import asyncio
 import io
 import uuid
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -21,6 +23,7 @@ from posts.db import (
     Base,
     Comment,
     CommentReaction,
+    IdempotencyRecord,
     PointTransaction,
     Post,
     PostReaction,
@@ -28,6 +31,7 @@ from posts.db import (
     get_async_session,
     migrate_post_reactions,
 )
+from posts.idempotency import ABANDONED_AFTER, KEY_RETENTION, Idempotency
 from posts.repository import PostRepository
 from posts.schema import PointSource, PostReactionType, PostType, ReactionType
 from posts.service import PostService
@@ -534,3 +538,259 @@ def test_traced_call_sends_only_filtered_data_and_records_failures(monkeypatch):
     assert "rejected" in sent
     for private in ("private-user-id", "private comment", "private@example.com"):
         assert private not in sent
+
+
+def keyed(key):
+    return {"Idempotency-Key": key}
+
+
+def stored_record(api, user, key="key-1"):
+    async def load():
+        async with api.http.session_maker() as session:
+            return await session.get(IdempotencyRecord, (user.id, key))
+
+    return api.http.run(load())
+
+
+def test_comment_with_same_key_is_created_once_and_replayed(api):
+    post_id = api.http.make_post(api.asker)
+    url = f"/posts/{post_id}/comments"
+
+    first = api.http.request("POST", url, api.alice, json={"content": "hi"}, headers=keyed("key-1"))
+    second = api.http.request("POST", url, api.alice, json={"content": "hi"}, headers=keyed("key-1"))
+
+    assert first.status_code == second.status_code == 201
+    assert second.json() == first.json()
+    assert "Idempotency-Replayed" not in first.headers
+    assert second.headers["Idempotency-Replayed"] == "true"
+    assert len(api.http.request("GET", url, api.alice).json()["comments"]) == 1
+
+
+def test_requests_without_a_key_are_not_deduplicated(api):
+    post_id = api.http.make_post(api.asker)
+    api.http.comment(post_id, api.alice, "same")
+    api.http.comment(post_id, api.alice, "same")
+
+    url = f"/posts/{post_id}/comments"
+    assert len(api.http.request("GET", url, api.alice).json()["comments"]) == 2
+
+
+def test_different_keys_create_separate_comments(api):
+    post_id = api.http.make_post(api.asker)
+    url = f"/posts/{post_id}/comments"
+
+    for key in ("key-1", "key-2"):
+        api.http.request("POST", url, api.alice, json={"content": "hi"}, headers=keyed(key))
+
+    assert len(api.http.request("GET", url, api.alice).json()["comments"]) == 2
+
+
+def test_same_key_from_another_user_is_independent(api):
+    post_id = api.http.make_post(api.asker)
+    url = f"/posts/{post_id}/comments"
+
+    alice = api.http.request("POST", url, api.alice, json={"content": "hi"}, headers=keyed("key-1"))
+    bob = api.http.request("POST", url, api.bob, json={"content": "hi"}, headers=keyed("key-1"))
+
+    assert "Idempotency-Replayed" not in bob.headers
+    assert bob.json()["id"] != alice.json()["id"]
+    assert bob.json()["email"] == "bob@example.com"
+
+
+@pytest.mark.parametrize(
+    "second_body, second_post",
+    [({"content": "different"}, False), ({"content": "hi"}, True)],
+)
+def test_reusing_a_key_for_a_different_request_is_rejected(api, second_body, second_post):
+    post_id = api.http.make_post(api.asker)
+    other_post_id = api.http.make_post(api.asker)
+    api.http.request(
+        "POST", f"/posts/{post_id}/comments", api.alice, json={"content": "hi"}, headers=keyed("key-1")
+    )
+
+    response = api.http.request(
+        "POST",
+        f"/posts/{other_post_id if second_post else post_id}/comments",
+        api.alice,
+        json=second_body,
+        headers=keyed("key-1"),
+    )
+
+    assert response.status_code == 422
+    assert "different request" in response.json()["detail"]
+
+
+def test_points_with_same_key_are_awarded_once(api):
+    post_id = api.http.make_post(api.asker)
+    comment_id = api.http.comment(post_id, api.alice)
+    url = f"/comments/{comment_id}/points"
+
+    for _ in range(3):
+        response = api.http.request("POST", url, api.asker, json={"points": 2}, headers=keyed("key-1"))
+        assert response.status_code == 200
+        assert response.json()["points_remaining"] == 3
+
+    assert api.http.total_points(api.alice) == 2
+
+
+def test_completing_a_task_with_same_key_replays_success(api):
+    task_id = api.http.request(
+        "POST", "/tasks", api.asker, json={"title": "water", "points": 3}, headers=keyed("task")
+    ).json()["id"]
+    replayed_task = api.http.request(
+        "POST", "/tasks", api.asker, json={"title": "water", "points": 3}, headers=keyed("task")
+    )
+    assert replayed_task.json()["id"] == task_id
+    assert len(api.http.request("GET", "/tasks", api.asker).json()["tasks"]) == 1
+
+    url = f"/tasks/{task_id}/complete"
+    first = api.http.request("POST", url, api.alice, headers=keyed("key-1"))
+    second = api.http.request("POST", url, api.alice, headers=keyed("key-1"))
+    unkeyed = api.http.request("POST", url, api.alice)
+
+    assert first.status_code == second.status_code == 200
+    assert second.json() == first.json()
+    assert unkeyed.status_code == 409
+    assert api.http.total_points(api.alice) == 3
+
+
+def test_failed_request_releases_its_key_so_a_retry_can_succeed(api):
+    post_id = api.http.make_post(api.asker, comments_disabled=True)
+    url = f"/posts/{post_id}/comments"
+
+    rejected = api.http.request("POST", url, api.alice, json={"content": "hi"}, headers=keyed("key-1"))
+    assert rejected.status_code == 403
+    assert stored_record(api, api.alice) is None
+
+    api.http.request("PATCH", f"/posts/{post_id}", api.asker, json={"commentsDisabled": False})
+    retried = api.http.request("POST", url, api.alice, json={"content": "hi"}, headers=keyed("key-1"))
+    assert retried.status_code == 201
+
+
+def insert_record(api, user, *, locked_at, created_at=None, fingerprint=None):
+    async def insert():
+        async with api.http.session_maker() as session:
+            session.add(
+                IdempotencyRecord(
+                    user_id=user.id,
+                    key="key-1",
+                    fingerprint=fingerprint or "unused",
+                    status="in_progress",
+                    locked_at=locked_at,
+                    created_at=created_at or locked_at,
+                )
+            )
+            await session.commit()
+
+    api.http.run(insert())
+
+
+def fingerprint_of(path, payload):
+    request = SimpleNamespace(method="POST", url=SimpleNamespace(path=path))
+    return Idempotency(request, None, "key-1")._fingerprint(payload)
+
+
+def test_request_still_in_progress_returns_conflict(api):
+    post_id = api.http.make_post(api.asker)
+    url = f"/posts/{post_id}/comments"
+    insert_record(
+        api, api.alice, locked_at=datetime.utcnow(), fingerprint=fingerprint_of(url, {"content": "hi"})
+    )
+
+    response = api.http.request("POST", url, api.alice, json={"content": "hi"}, headers=keyed("key-1"))
+
+    assert response.status_code == 409
+    assert response.headers["Retry-After"] == "1"
+    assert api.http.request("GET", url, api.alice).json()["comments"] == []
+
+
+def test_abandoned_claim_can_be_taken_over(api):
+    post_id = api.http.make_post(api.asker)
+    url = f"/posts/{post_id}/comments"
+    insert_record(
+        api,
+        api.alice,
+        locked_at=datetime.utcnow() - ABANDONED_AFTER - timedelta(seconds=1),
+        fingerprint=fingerprint_of(url, {"content": "hi"}),
+    )
+
+    response = api.http.request("POST", url, api.alice, json={"content": "hi"}, headers=keyed("key-1"))
+
+    assert response.status_code == 201
+    assert stored_record(api, api.alice).status == "completed"
+
+
+def test_expired_key_can_be_used_again(api):
+    post_id = api.http.make_post(api.asker)
+    url = f"/posts/{post_id}/comments"
+    expired = datetime.utcnow() - KEY_RETENTION - timedelta(seconds=1)
+    insert_record(api, api.alice, locked_at=expired, fingerprint="an older request")
+
+    response = api.http.request("POST", url, api.alice, json={"content": "hi"}, headers=keyed("key-1"))
+
+    assert response.status_code == 201
+    assert "Idempotency-Replayed" not in response.headers
+
+
+def test_concurrent_requests_with_same_key_create_one_comment(api):
+    post_id = api.http.make_post(api.asker)
+    url = f"/posts/{post_id}/comments"
+    api.http.holder.user = api.alice
+
+    async def send_all():
+        transport = httpx.ASGITransport(app=api.http.client.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await asyncio.gather(
+                *[
+                    client.post(url, json={"content": "hi"}, headers=keyed("key-1"))
+                    for _ in range(8)
+                ]
+            )
+
+    responses = api.http.run(send_all())
+
+    assert {response.status_code for response in responses} <= {201, 409}
+    created = [
+        response
+        for response in responses
+        if response.status_code == 201 and "Idempotency-Replayed" not in response.headers
+    ]
+    assert len(created) == 1
+    assert len(api.http.request("GET", url, api.alice).json()["comments"]) == 1
+
+
+def test_upload_with_same_key_uploads_and_creates_once(api, monkeypatch):
+    upload = Mock(return_value=SimpleNamespace(url="https://img.example/a.png", name="a.png"))
+    monkeypatch.setattr(posts_app.imagekit.files, "upload", upload)
+
+    def send(file_name, content=b"image"):
+        return api.http.request(
+            "POST",
+            "/posts/upload",
+            api.alice,
+            data={"caption": "c", "type": "share"},
+            files=[("file", (file_name, io.BytesIO(content), "image/png"))],
+            headers=keyed("key-1"),
+        )
+
+    first = send("a.png")
+    # Clients may generate a new file name per attempt, so only the content counts.
+    second = send("renamed.png")
+    different = send("a.png", content=b"another image")
+
+    assert first.status_code == second.status_code == 200
+    assert second.json() == first.json()
+    assert upload.call_count == 1
+    assert different.status_code == 422
+    assert len(api.http.request("GET", "/posts/mine", api.alice).json()["posts"]) == 1
+
+
+@pytest.mark.parametrize("key", ["", "x" * 256])
+def test_invalid_key_is_rejected(api, key):
+    post_id = api.http.make_post(api.asker)
+
+    response = api.http.request(
+        "POST", f"/posts/{post_id}/comments", api.alice, json={"content": "hi"}, headers=keyed(key)
+    )
+
+    assert response.status_code == 422

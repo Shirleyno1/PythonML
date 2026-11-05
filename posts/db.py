@@ -16,6 +16,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -159,6 +160,20 @@ class PointTransaction(Base):
     task_id = Column(String, ForeignKey("tasks.id", ondelete="SET NULL"))
     awarded_by = Column(GUID, ForeignKey("user.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class IdempotencyRecord(Base):
+    """A write a user has made under an Idempotency-Key, and its response for replay."""
+
+    __tablename__ = "idempotency_records"
+    user_id = Column(GUID, ForeignKey("user.id", ondelete="CASCADE"), primary_key=True)
+    key = Column(String(255), primary_key=True)
+    fingerprint = Column(String, nullable=False)
+    status = Column(String, nullable=False)
+    response_status = Column(Integer)
+    response_body = Column(JSON)
+    locked_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, nullable=False, index=True)
 
 
 def _as_uuid(value):

@@ -6,6 +6,7 @@ from typing import Annotated
 
 from posts.dependencies import get_post_service
 from posts.idempotency import Idempotency, file_digest, get_idempotency
+from posts.repository import PostRepository
 from posts.service import PostService
 from posts.users import current_active_user, current_superuser
 from fastapi import HTTPException, UploadFile, File, Form, Depends, APIRouter, Query
@@ -209,7 +210,7 @@ async def delete_post(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid post_id format: {post_id}")
 
-
+    await PostService(PostRepository(session)).delete_post(post_id, user.id)
     return {"message": "Post deleted successfully"}
 
 

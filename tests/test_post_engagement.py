@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 import posts.app as posts_app
+from chatbot.routes.ai import user_delete
 from observability import tracing
 from observability.tracing import trace_engagement_input, trace_engagement_output
 from posts.app import comments_router, points_router, posts_router, tasks_router
@@ -26,6 +27,7 @@ from posts.db import (
     IdempotencyRecord,
     PointTransaction,
     Post,
+    PostImage,
     PostReaction,
     User,
     get_async_session,
@@ -794,3 +796,62 @@ def test_invalid_key_is_rejected(api, key):
     )
 
     assert response.status_code == 422
+
+
+def test_owner_can_delete_post_with_images_and_engagement(api, monkeypatch):
+    upload = Mock(return_value=SimpleNamespace(url="https://img.example/a.png", name="a.png"))
+    monkeypatch.setattr(posts_app.imagekit.files, "upload", upload)
+    post_id = api.http.request(
+        "POST",
+        "/posts/upload",
+        api.asker,
+        data={"caption": "c", "type": "question"},
+        files=[("file", ("a.png", io.BytesIO(b"image"), "image/png"))],
+    ).json()["id"]
+    comment_id = api.http.comment(post_id, api.alice)
+    api.http.request("POST", f"/comments/{comment_id}/points", api.asker, json={"points": 2})
+
+    response = api.http.request("DELETE", f"/posts/{post_id}", api.asker)
+
+    assert response.status_code == 200
+    assert api.http.request("GET", "/posts/mine", api.asker).json()["posts"] == []
+    assert api.http.request("GET", f"/posts/{post_id}/comments", api.asker).status_code == 404
+    assert api.http.total_points(api.alice) == 2
+
+    async def image_count():
+        async with api.http.session_maker() as session:
+            return len((await session.execute(select(PostImage))).scalars().all())
+
+    assert api.http.run(image_count()) == 0
+
+
+def test_deleting_a_deleted_post_returns_not_found(api):
+    post_id = api.http.make_post(api.asker)
+    api.http.request("DELETE", f"/posts/{post_id}", api.asker)
+
+    assert api.http.request("DELETE", f"/posts/{post_id}", api.asker).status_code == 404
+
+
+def test_other_users_cannot_delete_a_post(api):
+    public_id = api.http.make_post(api.asker)
+    private_id = api.http.make_post(api.asker, is_private=True)
+
+    assert api.http.request("DELETE", f"/posts/{public_id}", api.alice).status_code == 403
+    # Private posts look like they don't exist to anyone but their owner.
+    assert api.http.request("DELETE", f"/posts/{private_id}", api.alice).status_code == 404
+    assert len(api.http.request("GET", "/posts/mine", api.asker).json()["posts"]) == 2
+
+
+def test_delete_rejects_a_malformed_post_id(api):
+    assert api.http.request("DELETE", "/posts/not-a-uuid", api.asker).status_code == 400
+
+
+def test_ai_delete_route_deletes_the_post(api):
+    post_id = api.http.make_post(api.asker)
+
+    async def delete():
+        async with api.http.session_maker() as session:
+            return await user_delete(SimpleNamespace(query=post_id), session, api.asker)
+
+    assert api.http.run(delete())["status"] == {"message": "Post deleted successfully"}
+    assert api.http.request("GET", "/posts/mine", api.asker).json()["posts"] == []

@@ -92,7 +92,9 @@ class PostService:
         }
 
     async def delete_post(self, post_id: str, user_id: uuid.UUID | str):
-        await self.repository.delete_post(post_id, uuid.UUID(str(user_id)))
+        user_uuid = uuid.UUID(str(user_id))
+        await self._get_visible_post(post_id, user_uuid)
+        await self.repository.delete_post(post_id, user_uuid)
 
     async def _get_visible_post(self, post_id: str, user_id: uuid.UUID, lock: bool = False):
         """Private posts look like they don't exist to anyone but their owner."""

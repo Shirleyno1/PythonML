@@ -116,6 +116,10 @@ def trace_tool_input(inputs: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def trace_delete_confirmation_input(inputs: dict[str, Any]) -> dict[str, Any]:
+    return {"post_id": (inputs.get("arguments") or {}).get("post_id")}
+
+
 ENGAGEMENT_INPUT_FIELDS = (
     "post_id",
     "comment_id",

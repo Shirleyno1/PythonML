@@ -846,12 +846,38 @@ def test_delete_rejects_a_malformed_post_id(api):
     assert api.http.request("DELETE", "/posts/not-a-uuid", api.asker).status_code == 400
 
 
-def test_ai_delete_route_deletes_the_post(api):
-    post_id = api.http.make_post(api.asker)
-
+def ask_ai_to_delete(api, post_id, user):
     async def delete():
         async with api.http.session_maker() as session:
-            return await user_delete(SimpleNamespace(query=post_id), session, api.asker)
+            return await user_delete(SimpleNamespace(query=post_id), session, user)
 
-    assert api.http.run(delete())["status"] == {"message": "Post deleted successfully"}
+    return api.http.run(delete())
+
+
+def test_ai_delete_asks_for_confirmation_and_keeps_the_post(api):
+    post_id = api.http.make_post(api.asker)
+
+    result = ask_ai_to_delete(api, post_id, api.asker)
+
+    assert result["status"] == "confirmation_required"
+    assert result["post"] == {"id": post_id, "title": "c"}
+    assert result["confirm"] == {"method": "DELETE", "path": f"/posts/{post_id}"}
+    assert len(api.http.request("GET", "/posts/mine", api.asker).json()["posts"]) == 1
+
+    # The confirmation step is the regular delete call.
+    assert api.http.request("DELETE", result["confirm"]["path"], api.asker).status_code == 200
     assert api.http.request("GET", "/posts/mine", api.asker).json()["posts"] == []
+
+
+@pytest.mark.parametrize("private", [False, True])
+def test_ai_delete_of_another_users_post_is_not_offered(api, private):
+    post_id = api.http.make_post(api.asker, is_private=private)
+
+    result = ask_ai_to_delete(api, post_id, api.alice)
+
+    assert result["status"] == "not_found"
+    assert "post" not in result
+
+
+def test_ai_delete_of_a_missing_post_is_not_offered(api):
+    assert ask_ai_to_delete(api, "post 15", api.asker)["status"] == "not_found"

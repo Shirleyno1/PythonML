@@ -96,6 +96,13 @@ class PostService:
         await self._get_visible_post(post_id, user_uuid)
         await self.repository.delete_post(post_id, user_uuid)
 
+    async def get_own_post_summary(self, post_id: str, user_id: uuid.UUID | str):
+        """What a user sees when confirming a delete; None unless the post is theirs."""
+        post = await self.repository.get_post(post_id)
+        if post is None or post.user_id != uuid.UUID(str(user_id)):
+            return None
+        return {"id": post.id, "title": post.caption or post.description or ""}
+
     async def _get_visible_post(self, post_id: str, user_id: uuid.UUID, lock: bool = False):
         """Private posts look like they don't exist to anyone but their owner."""
         post = await self.repository.get_post(post_id, lock=lock)

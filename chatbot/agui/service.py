@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from chatbot.agui.events import (
+    CustomEvent,
     ErrorEvent,
     RunFinishedEvent,
     RunStartedEvent,
@@ -49,6 +50,11 @@ def _format_tool_event(event: dict[str, str]) -> str | None:
             message_id=None,
             tool_call_id=event["tool_call_id"],
             content=event["content"],
+        ).to_sse()
+    if event_type == "delete_confirmation":
+        return CustomEvent(
+            name="delete_post_confirmation",
+            value={"postId": event["post_id"], "title": event["title"]},
         ).to_sse()
     return None
 

@@ -13,7 +13,7 @@ from observability.tracing import (
     trace_ai_result,
 )
 from chatbot.schemas import ChatRequest
-from posts.app import delete_post, upload_file
+from posts.app import upload_file
 from posts.db import User, get_async_session
 from posts.users import current_active_user
 from posts.repository import PostRepository
@@ -143,12 +143,25 @@ async def user_delete(
             "message": "Which post would you like to delete?",
         }
 
-    result = await delete_post(
-        post_id=intent.query,
-        session=session,
-        user=user,
+    post = await PostService(PostRepository(session)).get_own_post_summary(
+        intent.query,
+        user.id,
     )
-    return {"intent": "create", "status": result}
+    if post is None:
+        return {
+            "intent": "delete",
+            "status": "not_found",
+            "message": "I couldn't find that post among your posts.",
+        }
+
+    # Nothing is deleted here: the client asks the user, then calls this endpoint.
+    return {
+        "intent": "delete",
+        "status": "confirmation_required",
+        "message": "Please confirm you want to delete this post.",
+        "post": post,
+        "confirm": {"method": "DELETE", "path": f"/posts/{post['id']}"},
+    }
 
 
 async def general():

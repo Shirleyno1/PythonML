@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import uuid
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -16,6 +17,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 import posts.app as posts_app
+from chatbot import orchestrator as chat_orchestrator
 from chatbot.routes.ai import user_delete
 from observability import tracing
 from observability.tracing import trace_engagement_input, trace_engagement_output
@@ -881,3 +883,26 @@ def test_ai_delete_of_another_users_post_is_not_offered(api, private):
 
 def test_ai_delete_of_a_missing_post_is_not_offered(api):
     assert ask_ai_to_delete(api, "post 15", api.asker)["status"] == "not_found"
+
+
+def test_chat_delete_prompt_carries_the_whole_post_as_plain_json(api, monkeypatch):
+    monkeypatch.setattr(chat_orchestrator, "async_session_maker", api.http.session_maker)
+    post_id = api.http.make_post(api.asker, is_private=True, description="d")
+    api.http.comment(post_id, api.asker)
+
+    found = api.http.run(chat_orchestrator.find_own_post(post_id, str(api.asker.id)))
+
+    assert found["id"] == post_id
+    assert found["title"] == "c"
+    assert found["post"]["id"] == post_id
+    assert found["post"]["description"] == "d"
+    assert found["post"]["comment_count"] == 1
+    json.dumps(found)
+
+
+@pytest.mark.parametrize("private", [False, True])
+def test_chat_delete_prompt_is_not_offered_for_another_users_post(api, monkeypatch, private):
+    monkeypatch.setattr(chat_orchestrator, "async_session_maker", api.http.session_maker)
+    post_id = api.http.make_post(api.asker, is_private=private)
+
+    assert api.http.run(chat_orchestrator.find_own_post(post_id, str(api.alice.id))) is None

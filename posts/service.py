@@ -103,6 +103,18 @@ class PostService:
             return None
         return {"id": post.id, "title": post.caption or post.description or ""}
 
+    async def get_own_post_for_confirmation(self, post_id: str, user_id: uuid.UUID | str):
+        """The summary above plus the whole post, for clients that show it in the prompt."""
+        user_uuid = uuid.UUID(str(user_id))
+        post = await self.repository.get_post_with_details(post_id)
+        if post is None or post.user_id != user_uuid:
+            return None
+        return {
+            "id": post.id,
+            "title": post.caption or post.description or "",
+            "post": (await self._serialize_posts([post], user_uuid))[0],
+        }
+
     async def _get_visible_post(self, post_id: str, user_id: uuid.UUID, lock: bool = False):
         """Private posts look like they don't exist to anyone but their owner."""
         post = await self.repository.get_post(post_id, lock=lock)

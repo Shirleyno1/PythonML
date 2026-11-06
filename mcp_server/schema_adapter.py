@@ -20,7 +20,11 @@ class SchemaAdapter:
                 "name": tool.name,
                 "description": (
                     {
-                        "search_posts": "Search public posts from all users, optionally filtered by post type.",
+                        "search_posts": (
+                            "List public posts from all users, newest first, optionally filtered by "
+                            "post type. Post type is the only filter. When the user asks to search or "
+                            "see posts, call this straight away instead of asking how to narrow it."
+                        ),
                         "delete_post": "Ask the authenticated user to confirm deleting one of their own posts. The post is deleted only if they accept.",
                     }.get(tool.name, tool.description)
                 ),

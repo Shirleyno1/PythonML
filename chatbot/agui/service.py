@@ -1,7 +1,8 @@
 import asyncio
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 from uuid import UUID
 
 from chatbot.agui.events import (
@@ -29,9 +30,21 @@ logger = logging.getLogger(__name__)
 class AgentStreamState:
     answer: str = ""
     succeeded: bool = True
+    shown_posts: list[dict] = field(default_factory=list)
 
 
-def _format_tool_event(event: dict[str, str]) -> str | None:
+def _with_shown_posts(answer: str, posts: list[dict]) -> str:
+    """The model's reply no longer names the posts, but its next turn may refer to them."""
+    if not posts:
+        return answer
+    shown = "; ".join(
+        f'{position}. id={post.get("id")} "{(post.get("caption") or "")[:80]}"'
+        for position, post in enumerate(posts, start=1)
+    )
+    return f"{answer}\n\n[Posts shown to the user, in order: {shown}]"
+
+
+def _format_tool_event(event: dict[str, Any]) -> str | None:
     event_type = event["type"]
     if event_type == "start":
         return ToolCallStartEvent(
@@ -54,7 +67,16 @@ def _format_tool_event(event: dict[str, str]) -> str | None:
     if event_type == "delete_confirmation":
         return CustomEvent(
             name="delete_post_confirmation",
-            value={"postId": event["post_id"], "title": event["title"]},
+            value={
+                "postId": event["post_id"],
+                "title": event["title"],
+                "post": event["post"],
+            },
+        ).to_sse()
+    if event_type == "post_results":
+        return CustomEvent(
+            name="post_search_results",
+            value={"posts": event["posts"], "total": event["total"]},
         ).to_sse()
     return None
 
@@ -64,9 +86,9 @@ async def _run_agent(
     request: AgUiRequest,
     user_id: UUID,
     history: list[dict[str, str]],
-    event_queue: asyncio.Queue[dict[str, str] | None],
+    event_queue: asyncio.Queue[dict[str, Any] | None],
 ) -> None:
-    async def publish_tool_event(event: dict[str, str]) -> None:
+    async def publish_tool_event(event: dict[str, Any]) -> None:
         await event_queue.put(event)
 
     try:
@@ -93,7 +115,7 @@ async def stream_agent_events(
     thread_id = str(request.thread_id)
     run_id = request.run_id
     message_id = str(uuid.uuid4())
-    event_queue: asyncio.Queue[dict[str, str] | None] = asyncio.Queue()
+    event_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
     agent_task = asyncio.create_task(
         _run_agent(orchestrator, request, user_id, history, event_queue)
     )
@@ -115,7 +137,7 @@ async def stream_agent_events(
             await _persist_assistant_message(
                 request.thread_id,
                 user_id,
-                state.answer,
+                _with_shown_posts(state.answer, state.shown_posts),
             )
 
         yield TextMessageEndEvent(message_id=message_id).to_sse()
@@ -127,7 +149,7 @@ async def stream_agent_events(
 
 
 async def _stream_agent_events(
-    event_queue: asyncio.Queue[dict[str, str] | None],
+    event_queue: asyncio.Queue[dict[str, Any] | None],
     message_id: str,
     state: AgentStreamState,
 ):
@@ -149,6 +171,8 @@ async def _stream_agent_events(
                 code="AGENT_ERROR",
             ).to_sse()
         else:
+            if event["type"] == "post_results":
+                state.shown_posts = event["posts"]
             formatted_event = _format_tool_event(event)
             if formatted_event:
                 yield formatted_event

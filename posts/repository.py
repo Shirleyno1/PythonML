@@ -95,6 +95,14 @@ class PostRepository:
         result = await self.session.execute(query)
         return result.scalars().first()
 
+    async def get_post_with_details(self, post_id: str):
+        result = await self.session.execute(
+            select(Post)
+            .options(selectinload(Post.user), selectinload(Post.images))
+            .where(Post.id == post_id)
+        )
+        return result.scalars().first()
+
     async def set_comments_disabled(self, post: Post, comments_disabled: bool):
         post.comments_disabled = comments_disabled
         await self.session.commit()

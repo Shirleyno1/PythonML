@@ -2,6 +2,8 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from fastapi.encoders import jsonable_encoder
+
 from observability.tracing import (
     ai_traceable,
     trace_agent_input,
@@ -12,7 +14,14 @@ from posts.db import async_session_maker
 from posts.repository import PostRepository
 from posts.service import PostService
 
+SEARCH_POSTS_TOOL = "search_posts"
 DELETE_POST_TOOL = "delete_post"
+MAX_POST_CARDS = 10
+POST_CARDS_SHOWN_NOTE = (
+    "The app shows the user these posts as a visual list under your reply, so don't "
+    "list or repeat them. Introduce them in one short sentence, or answer directly if "
+    "the user asked something specific about them."
+)
 DELETE_NOT_FOUND_RESULT = (
     "Nothing was deleted: this post doesn't exist or doesn't belong to the user."
 )
@@ -27,10 +36,13 @@ DELETE_CONFIRMATION_UNAVAILABLE_RESULT = (
 )
 
 
-async def find_own_post(post_id: str, user_id: str) -> dict[str, str] | None:
+async def find_own_post(post_id: str, user_id: str) -> dict[str, Any] | None:
     async with async_session_maker() as session:
         service = PostService(PostRepository(session))
-        return await service.get_own_post_summary(post_id, user_id)
+        # Encoded here because it goes onto the event stream, which needs plain JSON.
+        return jsonable_encoder(
+            await service.get_own_post_for_confirmation(post_id, user_id)
+        )
 
 
 class AgentOrchestrator:
@@ -40,7 +52,7 @@ class AgentOrchestrator:
             openai_client,
             mcp_client,
             schema_adapter,
-            post_lookup: Callable[[str, str], Awaitable[dict[str, str] | None]] = find_own_post,
+            post_lookup: Callable[[str, str], Awaitable[dict[str, Any] | None]] = find_own_post,
     ):
         self.openai_client = openai_client
         self.mcp_client = mcp_client
@@ -58,7 +70,7 @@ class AgentOrchestrator:
         message: str,
         user_id: str,
         history: list[dict[str, str]] | None = None,
-        on_tool_event: Callable[[dict[str, str]], Awaitable[None]] | None = None,
+        on_tool_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ):
 
         async with self.mcp_client:
@@ -89,6 +101,12 @@ class AgentOrchestrator:
                 tools=openai_tools,
             )
 
+            # Cards wait for the end of the run: the model also searches to find a
+            # post to delete, and the user shouldn't see a list then.
+
+            found_posts: list[dict] = []
+            delete_requested = False
+
             # 4. Agent loop
 
             while True:
@@ -97,6 +115,15 @@ class AgentOrchestrator:
 
                 # No tool call means the model has produced the final answer
                 if not tool_calls:
+                    if found_posts and not delete_requested:
+                        await self._emit_tool_event(
+                            on_tool_event,
+                            {
+                                "type": "post_results",
+                                "posts": found_posts[:MAX_POST_CARDS],
+                                "total": len(found_posts),
+                            },
+                        )
                     return response.output_text
 
                 # 5. Execute every requested tool
@@ -143,6 +170,7 @@ class AgentOrchestrator:
                         # The model can only ask for a delete. The post is deleted
                         # when the user accepts the prompt and the app calls the API.
 
+                        delete_requested = True
                         tool_result = await self._request_delete_confirmation(
                             arguments=arguments,
                             user_id=user_id,
@@ -161,6 +189,11 @@ class AgentOrchestrator:
                         # 7. Convert MCP result into something OpenAI can read
 
                         tool_result = self._serialize_result(result)
+
+                        if tool_call["name"] == SEARCH_POSTS_TOOL and on_tool_event is not None:
+                            found_posts = self._get_posts(result)
+                            if found_posts:
+                                tool_result = f"{tool_result}\n\n{POST_CARDS_SHOWN_NOTE}"
                     await self._emit_tool_event(
                         on_tool_event,
                         {
@@ -201,7 +234,7 @@ class AgentOrchestrator:
         arguments: dict[str, Any],
         user_id: str,
         tool_call_id: str,
-        on_tool_event: Callable[[dict[str, str]], Awaitable[None]] | None,
+        on_tool_event: Callable[[dict[str, Any]], Awaitable[None]] | None,
     ) -> str:
         post = await self.post_lookup(str(arguments.get("post_id")), user_id)
         if post is None:
@@ -215,14 +248,15 @@ class AgentOrchestrator:
                 "tool_call_id": tool_call_id,
                 "post_id": post["id"],
                 "title": post["title"],
+                "post": post["post"],
             }
         )
         return DELETE_CONFIRMATION_SHOWN_RESULT
 
     @staticmethod
     async def _emit_tool_event(
-        callback: Callable[[dict[str, str]], Awaitable[None]] | None,
-        event: dict[str, str],
+        callback: Callable[[dict[str, Any]], Awaitable[None]] | None,
+        event: dict[str, Any],
     ) -> None:
         if callback is not None:
             await callback(event)
@@ -245,6 +279,11 @@ class AgentOrchestrator:
                 )
 
         return tool_calls
+
+    @staticmethod
+    def _get_posts(result: Any) -> list[dict]:
+        posts = getattr(result, "data", result)
+        return posts if isinstance(posts, list) else []
 
     @staticmethod
     def _serialize_result(

@@ -11,6 +11,7 @@ search_posts
 create_post
 update_post
 delete_post
+search_documents
 ```
 
 The AI agent does not need to know how these operations are implemented internally. It interacts with them through MCP.

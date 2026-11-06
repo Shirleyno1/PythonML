@@ -30,7 +30,9 @@ class DocumentLoader:
         for page_number, page in enumerate(reader.pages, start=1):
             text = page.extract_text() or ""
 
-            text = text.strip()
+            # PDFs can extract with a line break after every word. Search copes, but
+            # the model reading these passages is better off without them.
+            text = " ".join(text.split())
 
             if not text:
                 continue

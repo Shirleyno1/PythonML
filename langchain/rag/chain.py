@@ -1,21 +1,15 @@
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnableLambda, RunnablePassthrough
+from langchain_openai import ChatOpenAI
 
-from langchain.models import model
+from ai_prompts import catalog, get_prompt
+from settings.config import settings
 
-rag_prompt = ChatPromptTemplate.from_template(
-    """
-    Answer the question using only the context below.
 
-    Context:
-    {context}
-
-    Question:
-    {question}
-    """
-)
-
-rag_chain = rag_prompt | model
+def build_answer_chain() -> Runnable:
+    """Prompt and model; takes {"context", "question"}. Resolved once per call."""
+    prompt = get_prompt(catalog.LANGCHAIN_RAG)
+    model = ChatOpenAI(api_key=settings.OPENAI_API_KEY, model=prompt.model, temperature=0)
+    return prompt.template | model
 
 
 def build_rag_chain(retriever: Runnable) -> Runnable:
@@ -24,7 +18,7 @@ def build_rag_chain(retriever: Runnable) -> Runnable:
                 "context": retriever | RunnableLambda(format_documents),
                 "question": RunnablePassthrough(),
             }
-            | rag_chain
+            | build_answer_chain()
     )
 
 

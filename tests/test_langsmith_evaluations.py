@@ -126,7 +126,7 @@ def test_rag_predictor_retrieves_context_and_passes_it_to_generation(monkeypatch
     chain_module.format_documents = lambda docs: "\n\n".join(
         doc.page_content for doc in docs
     )
-    chain_module.rag_chain = type(
+    chain_module.build_answer_chain = lambda: type(
         "FakeRagChain",
         (),
         {"invoke": staticmethod(fake_generate)},

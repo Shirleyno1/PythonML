@@ -1,9 +1,11 @@
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
+from ai_prompts import warm_prompts
 from chatbot.openai_client import OpenAIClient
 from chatbot.orchestrator import AgentOrchestrator
 from chatbot.routes import agui, ai, chat, mcp, rag
@@ -22,6 +24,7 @@ setup_logging()
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await create_db_tables()
+    await asyncio.to_thread(warm_prompts)
     yield
 
 

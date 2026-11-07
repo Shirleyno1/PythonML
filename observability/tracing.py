@@ -2,11 +2,21 @@ from collections.abc import Callable
 from typing import Any, Literal, ParamSpec, TypeVar
 
 from langsmith import traceable
+from langsmith.wrappers import wrap_openai
 
 from settings.config import settings
 
 P = ParamSpec("P")
 R = TypeVar("R")
+C = TypeVar("C")
+
+
+def traced_openai(client: C) -> C:
+    """Records each OpenAI call as an LLM run with its model and token usage, from
+    which LangSmith works out the cost, plus time to first token when streamed."""
+    if not settings.LANGSMITH_TRACING:
+        return client
+    return wrap_openai(client, tracing_extra={"tags": ["pythonml", "ai", "openai"]})
 
 
 def ai_traceable(

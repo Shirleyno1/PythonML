@@ -4,8 +4,6 @@ from functools import lru_cache
 from fastapi import APIRouter, Depends
 
 from chatbot.schemas import ChatRequest
-from langchain.rag.chain import build_rag_chain
-from langchain.rag.retrievers import RagRetriever
 from observability.tracing import langsmith_run_config
 from posts.db import User
 from posts.users import current_active_user
@@ -26,6 +24,11 @@ async def rag(
 @lru_cache(maxsize=1)
 def get_langchain_pipeline():
     """Built once: building embeds the whole PDF, which is billed by OpenAI."""
+    # Imported here because these modules create OpenAI clients on import, which
+    # fails without OPENAI_API_KEY, and only this route needs them.
+    from langchain.rag.chain import build_rag_chain
+    from langchain.rag.retrievers import RagRetriever
+
     retriever = RagRetriever(
         file_path="./data/Resturaunt Q&A.pdf",
     ).get_retriever()

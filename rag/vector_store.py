@@ -1,3 +1,5 @@
+import hashlib
+import json
 from pathlib import Path
 
 import chromadb
@@ -8,7 +10,8 @@ class VectorStore:
     def __init__(
             self,
             persist_directory: str = "./chroma_db",
-            collection_name: str = "documents"
+            collection_name: str = "documents",
+            embedding_function=None,
     ):
 
         Path(persist_directory).mkdir(parents=True, exist_ok=True)
@@ -17,15 +20,49 @@ class VectorStore:
             path=persist_directory
         )
 
+        # Left out unless given, so Chroma uses its default embedding model.
+        options = (
+            {"embedding_function": embedding_function}
+            if embedding_function is not None
+            else {}
+        )
         self.collection = (
             self.client.get_or_create_collection(
-                name=collection_name
+                name=collection_name,
+                **options,
             )
         )
+
+    def sync_documents(
+            self,
+            chunks: list[dict],
+    ) -> bool:
+        """
+        Make the index hold exactly these chunks, and return whether it had to change.
+        An unchanged index is left alone, so restarting doesn't embed everything again.
+        """
+
+        digest = hashlib.sha256(
+            json.dumps(chunks, sort_keys=True).encode()
+        ).hexdigest()
+
+        existing = self.collection.get(include=["metadatas"])
+        is_current = len(existing["ids"]) == len(chunks) and all(
+            metadata.get("digest") == digest
+            for metadata in existing["metadatas"]
+        )
+        if is_current:
+            return False
+
+        if existing["ids"]:
+            self.collection.delete(ids=existing["ids"])
+        self.add_documents(chunks, digest=digest)
+        return True
 
     def add_documents(
             self,
             chunks: list[dict],
+            digest: str = "",
     ) -> None:
 
         if not chunks:
@@ -49,6 +86,7 @@ class VectorStore:
                 "source": chunk["source"],
                 "page": chunk["page"],
                 "chunk_index": chunk["chunk_index"],
+                "digest": digest,
             })
         self.collection.upsert(
             documents=documents,

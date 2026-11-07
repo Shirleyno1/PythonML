@@ -29,6 +29,9 @@ htmlcov/
 *.db-shm
 *.db-wal
 
+# Local vector indexes, rebuilt from the PDF on first use
+chroma_db*/
+
 # Logs
 *.log
 

@@ -1,6 +1,7 @@
 from openai import AsyncOpenAI
 
-from observability.tracing import ai_traceable, trace_model_output
+from ai_prompts import catalog, get_prompt
+from observability.tracing import ai_traceable, trace_model_output, traced_openai
 
 
 class OpenAIClient:
@@ -9,12 +10,12 @@ class OpenAIClient:
             self,
             api_key: str,
     ):
-        self.client = AsyncOpenAI(api_key=api_key)
+        self.client = traced_openai(AsyncOpenAI(api_key=api_key))
 
     @ai_traceable(
         name="AG-UI Model Response",
         component="agui-model",
-        run_type="llm",
+        run_type="chain",
         process_outputs=trace_model_output,
     )
     async def create_response(
@@ -23,9 +24,12 @@ class OpenAIClient:
             tools: list
     ):
 
+        prompt = get_prompt(catalog.AGUI_AGENT)
+        if isinstance(message, str):
+            message = [{"role": "user", "content": message}]
         response = await self.client.responses.create(
-            model = "gpt-5-mini",
-            input = message,
+            model = prompt.model,
+            input = [*prompt.to_messages(), *message],
             tools = tools
         )
 
@@ -36,7 +40,7 @@ class OpenAIClient:
     @ai_traceable(
         name="AG-UI Model Response With Tool Result",
         component="agui-model",
-        run_type="llm",
+        run_type="chain",
         process_outputs=trace_model_output,
     )
     async def create_response_with_tool_result(
@@ -48,7 +52,8 @@ class OpenAIClient:
     ):
 
         result = await self.client.responses.create(
-            model = "gpt-5-mini",
+            # The prompt's messages came with the first request, via previous_response_id.
+            model = get_prompt(catalog.AGUI_AGENT).model,
             previous_response_id=response_id,
 
             input = [

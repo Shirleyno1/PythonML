@@ -55,10 +55,11 @@ def _make_rag_predictor():
     if not RAG_DOCUMENT_PATH.is_file():
         raise FileNotFoundError(f"RAG evaluation document not found: {RAG_DOCUMENT_PATH}")
 
-    from langchain.rag.chain import format_documents, rag_chain
+    from langchain.rag.chain import build_answer_chain, format_documents
     from langchain.rag.retrievers import RagRetriever
 
     retriever = RagRetriever(file_path=str(RAG_DOCUMENT_PATH)).get_retriever()
+    rag_chain = build_answer_chain()
 
     def predict(inputs: dict[str, Any]) -> dict[str, str]:
         question = inputs["question"]

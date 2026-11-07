@@ -4,10 +4,12 @@ import os
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from ai_prompts import catalog, get_prompt
 from chatbot.models import AIResponse
 from chatbot.classifier import UserIntent
 from observability.tracing import (
     ai_traceable,
+    traced_openai,
     trace_intent_output,
     trace_message_input,
 )
@@ -20,16 +22,17 @@ def _get_client() -> OpenAI:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY must be configured to use AI features.")
-    return OpenAI(api_key=api_key)
+    return traced_openai(OpenAI(api_key=api_key))
 
 
 def generate_structured_response(
         message: str
 ) -> AIResponse:
 
+    prompt = get_prompt(catalog.STRUCTURED_ANSWER)
     response = _get_client().responses.parse(
-        model="gpt-5-mini",
-        input=message,
+        model=prompt.model,
+        input=prompt.to_messages(message=message),
         text_format=AIResponse
     )
     result = response.output_parsed
@@ -40,54 +43,15 @@ def generate_structured_response(
 @ai_traceable(
     name="AI Intent Classification",
     component="intent-classification",
-    run_type="llm",
+    run_type="chain",
     process_inputs=trace_message_input,
     process_outputs=trace_intent_output,
 )
 def classify_message(message: str) -> UserIntent:
+    prompt = get_prompt(catalog.INTENT_CLASSIFIER)
     response = _get_client().responses.parse(
-        model="gpt-5-mini",
-        input=[
-            {
-                "role": "system",
-                "content": """
-    You are an intent classifier for a personal post management application.
-    
-    Your job is to classify the user's message into exactly one of these intents:
-    
-    - search
-    - create
-    - delete
-    - update
-    - general
-    
-    Rules:
-    
-    search:
-    The user wants to find, search, or retrieve posts.
-    
-    create:
-    The user wants to create a new post.
-    
-    delete:
-    The user wants to delete a post.
-    
-    general:
-    The user is asking a general question that does not require
-    post management.
-    
-    If the intent is search, extract the search query.
-    
-    If the intent is not search, query should be null.
-    
-    In the intent is delete, extract the query, it will be post id that want to delete.
-    """
-            },
-            {
-                "role": "user",
-                "content": message
-            }
-        ],
+        model=prompt.model,
+        input=prompt.to_messages(message=message),
         text_format=UserIntent
     )
     result = response.output_parsed

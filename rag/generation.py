@@ -3,48 +3,30 @@ import os
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
+from ai_prompts import catalog, get_prompt
+from observability.tracing import traced_openai
+
 
 class GenerationService:
 
     def __init__(
             self,
-            model: str = "gpt-5-mini",
+            model: str | None = None,
     ):
+        # None means the model of the rag answer prompt.
         self.model = model
         load_dotenv()
-        self.client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.client = traced_openai(AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY")))
 
     async def generate(
             self,
             question: str,
             context: str,
     ):
-
-        system_prompt = """
-        You are a helpful assistant answering questions
-        using the provided context.
-
-        Rules:
-
-        1. Answer using the provided context.
-        2. If the context does not contain enough information,
-           say that you don't have enough information.
-        3. Do not invent facts.
-        4. Keep the answer clear and concise.
-        """
-
+        prompt = get_prompt(catalog.RAG_ANSWER)
         response = await self.client.responses.create(
-            model=self.model,
-            instructions=system_prompt,
-            input=f"""
-Context:
-
-{context}
-
-Question:
-
-{question}         
-"""
+            model=self.model or prompt.model,
+            input=prompt.to_messages(context=context, question=question),
         )
 
         return response.output_text
